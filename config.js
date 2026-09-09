@@ -90,6 +90,7 @@ export function loadConfig() {
       cfg.aimBone = saved.aimHead ? 'head' : 'body';
     }
   } catch (e) { /* ignore */ }
+  if (typeof cfg.aimFov === 'number') cfg.aimFov = Math.max(0, Math.min(100, cfg.aimFov));
   return cfg;
 }
 

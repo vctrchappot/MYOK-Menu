@@ -475,13 +475,22 @@ function drawVisuals(canvas, cfg, game, player, camera, menuOpen) {
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.clearRect(0, 0, W, H);
 
-  if (cfg.fovCircle && cfg.aimbot && !menuOpen) {
-    const radius = fovToPixels(cfg.aimFov, camera, H);
-    ctx.beginPath();
-    ctx.arc(W * 0.5, H * 0.5, radius, 0, Math.PI * 2);
-    ctx.strokeStyle = 'rgba(80, 220, 200, 0.45)';
-    ctx.lineWidth = 1;
-    ctx.stroke();
+  if (cfg.fovCircle && !menuOpen) {
+    const radius = fovToPixels(cfg.aimFov, camera, W, H);
+    if (radius > 0.5) {
+      const cx = W * 0.5, cy = H * 0.5;
+      ctx.beginPath();
+      ctx.arc(cx, cy, radius, 0, Math.PI * 2);
+      ctx.strokeStyle = 'rgba(255, 204, 0, 0.65)';
+      ctx.lineWidth = 2;
+      ctx.setLineDash([7, 5]);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.beginPath();
+      ctx.arc(cx, cy, 2.5, 0, Math.PI * 2);
+      ctx.fillStyle = 'rgba(255, 204, 0, 0.85)';
+      ctx.fill();
+    }
   }
 
   if (cfg.radar && player) drawRadar(ctx, cfg, game, player, W, H);
@@ -641,8 +650,11 @@ function drawRadar(ctx, cfg, game, player, W, H) {
   ctx.restore();
 }
 
-function fovToPixels(fovDeg, camera, H) {
+function fovToPixels(fovDeg, camera, W, H) {
+  if (!fovDeg || fovDeg <= 0) return 0;
   const vfov = (camera && camera.fov) ? camera.fov * Math.PI / 180 : 1.2;
-  const ang = fovDeg * Math.PI / 180;
-  return Math.max(8, Math.tan(ang) / Math.tan(vfov * 0.5) * (H * 0.5));
+  const ang = Math.min(fovDeg, 89) * Math.PI / 180;
+  const r = Math.tan(ang) / Math.tan(vfov * 0.5) * (H * 0.5);
+  const maxR = Math.hypot(W, H) * 0.52;
+  return Math.min(r, maxR);
 }

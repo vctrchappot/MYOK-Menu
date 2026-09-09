@@ -291,7 +291,7 @@ function fillAim(el, cfg, onField) {
   const aim = section('Aimbot');
   aim.append(
     check('aimbot', 'Aimbot', cfg, onField),
-    slider('aimFov', 'FOV', cfg, onField, 1, 30, 0.5),
+    slider('aimFov', 'FOV', cfg, onField, 0, 100, 1),
     slider('aimSmooth', 'Smooth', cfg, onField, 1, 12, 0.1),
     slider('aimDist', 'Max-Distanz', cfg, onField, 20, 250, 5),
     select('aimBone', 'Knochen', cfg, onField, [['head', 'Kopf'], ['body', 'Körper']]),
@@ -481,17 +481,37 @@ function hotkeyOpts() {
     .map((k) => [k, k]);
 }
 
+function syncToggleRow(input) {
+  const row = input.closest('.fs-toggle-row');
+  if (row) row.classList.toggle('on', input.checked);
+}
+
 function check(key, label, cfg, onField) {
   const row = document.createElement('label');
-  row.className = 'fs-row';
+  row.className = 'fs-row fs-toggle-row' + (cfg[key] ? ' on' : '');
   row.innerHTML = `<span class="fs-label">${label}</span>`;
+
+  const wrap = document.createElement('span');
+  wrap.className = 'fs-switch';
+
   const input = document.createElement('input');
   input.type = 'checkbox';
   input.className = 'fs-check';
   input.dataset.key = key;
   input.checked = !!cfg[key];
-  input.addEventListener('change', () => { cfg[key] = input.checked; onField(); });
-  row.appendChild(input);
+
+  const track = document.createElement('span');
+  track.className = 'fs-switch-track';
+  track.innerHTML = '<span class="fs-switch-thumb"></span>';
+
+  wrap.append(input, track);
+  row.appendChild(wrap);
+
+  input.addEventListener('change', () => {
+    cfg[key] = input.checked;
+    syncToggleRow(input);
+    onField();
+  });
   return row;
 }
 
@@ -548,9 +568,16 @@ function select(key, label, cfg, onField, options, selected) {
 function refreshAllInputs(root, cfg) {
   root.querySelectorAll('[data-key]').forEach((el) => {
     const k = el.dataset.key;
-    if (el.type === 'checkbox') el.checked = !!cfg[k];
-    else if (el.type === 'range') el.value = String(cfg[k]);
-    else if (el.tagName === 'SELECT') el.value = cfg[k];
+    if (el.type === 'checkbox') {
+      el.checked = !!cfg[k];
+      syncToggleRow(el);
+    } else if (el.type === 'range') {
+      el.value = String(cfg[k]);
+      const val = el.closest('.fs-slide-block') && el.closest('.fs-slide-block').querySelector('.fs-val');
+      if (val) val.textContent = fmt(cfg[k]);
+    } else if (el.tagName === 'SELECT') {
+      el.value = cfg[k];
+    }
   });
 }
 
@@ -581,8 +608,10 @@ function softwareClick(el, state, cfg, onField, setTab, hooks) {
     return;
   }
 
-  const box = el.classList && el.classList.contains('fs-check') ? el
-    : (el.closest && el.closest('.fs-row') && el.closest('.fs-row').querySelector('.fs-check'));
+  const toggleRow = el.closest && el.closest('.fs-toggle-row');
+  const box = (el.classList && el.classList.contains('fs-check') ? el : null)
+    || (toggleRow && toggleRow.querySelector('.fs-check'))
+    || (el.closest && el.closest('.fs-switch') && el.closest('.fs-switch').querySelector('.fs-check'));
   if (box) {
     box.checked = !box.checked;
     box.dispatchEvent(new Event('change', { bubbles: true }));
