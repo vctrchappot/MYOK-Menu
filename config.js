@@ -47,6 +47,7 @@ export const DEFAULTS = {
   infAmmo: false,
   noRecoil: false,
   rapidFire: false,
+  ghostshot: false,
   infDash: false,
   autoBhop: false,
   thirdPerson: false,
@@ -90,9 +91,11 @@ export const DEFAULTS = {
   hkSpeed: 'F4',
 };
 
+const CUSTOM_PRESET_KEY = 'fs.menu.preset.custom';
+
 const FEATURE_KEYS = [
   'aimbot', 'aimlock', 'triggerbot', 'esp', 'chams', 'radar', 'fovCircle',
-  'godmode', 'infAmmo', 'noRecoil', 'rapidFire', 'infDash', 'autoBhop',
+  'godmode', 'infAmmo', 'noRecoil', 'rapidFire', 'ghostshot', 'infDash', 'autoBhop',
   'thirdPerson', 'noclip', 'fly', 'spinbot', 'speed', 'superJump',
   'customWeapon', 'customPlayer',
 ];
@@ -186,6 +189,7 @@ export function resetPlayerTransform(cfg) {
 }
 
 export function applyPreset(cfg, id) {
+  if (id === 'custom') return loadCustomPreset(cfg);
   const preset = PRESETS[id];
   if (!preset) return false;
   for (const k of Object.keys(preset)) {
@@ -195,6 +199,74 @@ export function applyPreset(cfg, id) {
   cfg.activePreset = id;
   saveConfig(cfg);
   return true;
+}
+
+export function snapshotSettings(cfg) {
+  const snap = {};
+  for (const k of Object.keys(DEFAULTS)) snap[k] = cfg[k];
+  return snap;
+}
+
+export function applySettingsSnapshot(cfg, snap) {
+  if (!snap) return false;
+  for (const k of Object.keys(DEFAULTS)) {
+    if (snap[k] !== undefined) cfg[k] = snap[k];
+  }
+  return true;
+}
+
+export async function saveCustomPreset(cfg) {
+  try {
+    const { snapshotModelsForPreset } = await import('./customAssets.js');
+    const models = await snapshotModelsForPreset();
+    localStorage.setItem(CUSTOM_PRESET_KEY, JSON.stringify({
+      savedAt: Date.now(),
+      settings: snapshotSettings(cfg),
+      models,
+    }));
+    cfg.activePreset = 'custom';
+    saveConfig(cfg);
+    return true;
+  } catch (e) {
+    return false;
+  }
+}
+
+export async function loadCustomPreset(cfg) {
+  try {
+    const raw = localStorage.getItem(CUSTOM_PRESET_KEY);
+    if (!raw) return false;
+    const data = JSON.parse(raw);
+    if (!data || !data.settings) return false;
+    applySettingsSnapshot(cfg, data.settings);
+    const { restoreModelsFromPreset } = await import('./customAssets.js');
+    await restoreModelsFromPreset(cfg);
+    cfg.activePreset = 'custom';
+    saveConfig(cfg);
+    return true;
+  } catch (e) {
+    return false;
+  }
+}
+
+export function hasCustomPreset() {
+  try { return !!localStorage.getItem(CUSTOM_PRESET_KEY); } catch (e) { return false; }
+}
+
+export function getCustomPresetMeta() {
+  try {
+    const raw = localStorage.getItem(CUSTOM_PRESET_KEY);
+    if (!raw) return null;
+    const data = JSON.parse(raw);
+    if (!data || !data.savedAt) return null;
+    const m = data.models || {};
+    const parts = [];
+    if (m.weapon) parts.push('Waffe');
+    if (m.player) parts.push('Spieler');
+    return { savedAt: data.savedAt, models: parts.join(' + ') || null };
+  } catch (e) {
+    return null;
+  }
 }
 
 export function loadConfig() {

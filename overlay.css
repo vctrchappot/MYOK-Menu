@@ -201,6 +201,8 @@
 }
 .fs-section:last-child { margin-bottom: 0; }
 
+.fs-hidden { display: none !important; }
+
 .fs-section-title {
   font-size: 10px;
   font-weight: 700;
@@ -543,6 +545,58 @@
 }
 
 .fs-preset-btn.active strong { color: var(--fs-teal); }
+
+.fs-custom-preset {
+  grid-column: 1 / -1;
+  padding: 12px 14px;
+  border: 1px solid var(--fs-stroke);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.fs-custom-preset.active {
+  border-color: rgba(90, 230, 210, 0.55);
+  background: rgba(90, 230, 210, 0.08);
+  box-shadow: 0 0 0 1px rgba(90, 230, 210, 0.12) inset;
+}
+
+.fs-custom-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 4px;
+}
+
+.fs-custom-head strong {
+  font-size: 14px;
+  color: var(--fs-accent);
+}
+
+.fs-custom-preset.active .fs-custom-head strong { color: var(--fs-teal); }
+
+.fs-custom-head span {
+  font-size: 10px;
+  color: var(--fs-dim);
+}
+
+.fs-custom-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.fs-btn.primary {
+  border-color: rgba(90, 230, 210, 0.45);
+  background: rgba(90, 230, 210, 0.12);
+  color: var(--fs-teal);
+}
+
+.fs-btn.primary:hover {
+  border-color: rgba(90, 230, 210, 0.65);
+  background: rgba(90, 230, 210, 0.2);
+}
 
 .fs-subsection {
   margin: 6px 0 2px;

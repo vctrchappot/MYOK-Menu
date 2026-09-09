@@ -1,6 +1,7 @@
 import {
   saveConfig, resetConfig, anyFeatureOn, PRESETS, applyPreset,
   resetWeaponTransform, resetPlayerTransform,
+  saveCustomPreset, loadCustomPreset, hasCustomPreset, getCustomPresetMeta,
 } from './config.js';
 
 const TABS = [
@@ -99,6 +100,7 @@ export function createOverlay(cfg, hooks) {
 
   function onField() {
     saveConfig(cfg);
+    updateConditionalVisibility(root, cfg);
     if (state.onChange) state.onChange();
     syncWatermark();
     applyPanelOpacity(cfg);
@@ -278,6 +280,7 @@ export function createOverlay(cfg, hooks) {
 
   applyPanelOpacity(cfg);
   syncWatermark();
+  updateConditionalVisibility(root, cfg);
 
   return {
     canvas,
@@ -305,6 +308,34 @@ function section(title) {
   return el;
 }
 
+/** Abhängige UI nur anzeigen, wenn Parent-Toggle(s) aktiv sind. */
+function markCond(el, cond) {
+  if (!el || !cond) return el;
+  if (cond.any) el.dataset.showAny = cond.any;
+  if (cond.all) el.dataset.showAll = cond.all;
+  return el;
+}
+
+function condVisible(cfg, el) {
+  const any = el.dataset.showAny;
+  const all = el.dataset.showAll;
+  if (!any && !all) return true;
+  if (any && !any.split(',').some((k) => cfg[k.trim()])) return false;
+  if (all && !all.split(',').every((k) => cfg[k.trim()])) return false;
+  return true;
+}
+
+function updateConditionalVisibility(root, cfg) {
+  root.querySelectorAll('[data-show-any], [data-show-all]').forEach((el) => {
+    el.classList.toggle('fs-hidden', !condVisible(cfg, el));
+  });
+  root.querySelectorAll('.fs-section').forEach((sec) => {
+    const children = [...sec.children].filter((c) => !c.classList.contains('fs-section-title'));
+    const anyVisible = children.some((c) => !c.classList.contains('fs-hidden'));
+    sec.classList.toggle('fs-hidden', children.length > 0 && !anyVisible);
+  });
+}
+
 function fillPresets(el, cfg, onField, root) {
   const intro = document.createElement('p');
   intro.className = 'fs-list-hint';
@@ -315,6 +346,14 @@ function fillPresets(el, cfg, onField, root) {
   grid.className = 'fs-preset-grid';
   grid.id = 'fs-preset-grid';
 
+  function setActivePreset(id) {
+    grid.querySelectorAll('.fs-preset-btn').forEach((btn) => {
+      btn.classList.toggle('active', btn.dataset.preset === id);
+    });
+    const customCard = el.querySelector('.fs-custom-preset');
+    if (customCard) customCard.classList.toggle('active', id === 'custom');
+  }
+
   for (const [id, p] of Object.entries(PRESETS)) {
     const b = document.createElement('button');
     b.type = 'button';
@@ -324,14 +363,60 @@ function fillPresets(el, cfg, onField, root) {
     b.addEventListener('click', () => {
       applyPreset(cfg, id);
       refreshAllInputs(root, cfg);
-      grid.querySelectorAll('.fs-preset-btn').forEach((btn) => {
-        btn.classList.toggle('active', btn.dataset.preset === id);
-      });
+      setActivePreset(id);
       onField();
     });
     grid.appendChild(b);
   }
+
+  const custom = document.createElement('div');
+  custom.className = 'fs-custom-preset' + (cfg.activePreset === 'custom' ? ' active' : '');
+  custom.innerHTML = `
+    <div class="fs-custom-head">
+      <strong>Custom</strong>
+      <span id="fs-custom-meta">${formatCustomMeta()}</span>
+    </div>
+    <p class="fs-list-hint">Eigene Einstellungen speichern, laden und verwenden.</p>
+    <div class="fs-custom-actions"></div>
+  `;
+  const actions = custom.querySelector('.fs-custom-actions');
+  actions.append(
+    btn('Speichern', '', async () => {
+      if (await saveCustomPreset(cfg)) {
+        custom.querySelector('#fs-custom-meta').textContent = formatCustomMeta();
+        setActivePreset('custom');
+        onField();
+      } else {
+        alert('Custom-Preset konnte nicht gespeichert werden.');
+      }
+    }),
+    btn('Laden', '', () => { applyCustomPreset(); }),
+    btn('Verwenden', 'primary', () => { applyCustomPreset(); }),
+  );
+  grid.appendChild(custom);
   el.appendChild(grid);
+
+  function formatCustomMeta() {
+    if (!hasCustomPreset()) return 'Noch nicht gespeichert';
+    const meta = getCustomPresetMeta();
+    if (!meta || !meta.savedAt) return 'Gespeichert';
+    let s = new Date(meta.savedAt).toLocaleString('de-DE');
+    if (meta.models) s += ' · ' + meta.models;
+    return s;
+  }
+
+  async function applyCustomPreset() {
+    if (!(await loadCustomPreset(cfg))) {
+      alert('Noch kein Custom-Preset gespeichert.');
+      return false;
+    }
+    refreshAllInputs(root, cfg);
+    refreshAssetLabels(cfg, root.querySelector('[data-page="assets"]'));
+    custom.querySelector('#fs-custom-meta').textContent = formatCustomMeta();
+    setActivePreset('custom');
+    onField();
+    return true;
+  }
 
   const hint = document.createElement('p');
   hint.className = 'fs-list-hint';
@@ -348,82 +433,86 @@ function aimKeySelect(key, label, cfg, onField) {
 }
 
 function fillAim(el, cfg, onField) {
-  const shared = section('Gemeinsam');
+  const aimOn = { any: 'aimbot,aimlock' };
+  const anyAim = { any: 'aimbot,aimlock,triggerbot' };
+
+  const shared = markCond(section('Gemeinsam'), anyAim);
   shared.append(
-    slider('aimFov', 'FOV-Radius', cfg, onField, 0, 100, 1),
-    slider('aimDist', 'Max-Distanz', cfg, onField, 20, 250, 5),
-    select('aimBone', 'Zielpunkt', cfg, onField, [['head', 'Kopf'], ['body', 'Körper']]),
-    select('aimPriority', 'Priorität', cfg, onField, [
+    markCond(slider('aimFov', 'FOV-Radius', cfg, onField, 0, 100, 1), anyAim),
+    markCond(slider('aimDist', 'Max-Distanz', cfg, onField, 20, 250, 5), aimOn),
+    markCond(select('aimBone', 'Zielpunkt', cfg, onField, [['head', 'Kopf'], ['body', 'Körper']]), aimOn),
+    markCond(select('aimPriority', 'Priorität', cfg, onField, [
       ['crosshair', 'Nächstes zum Fadenkreuz'],
       ['distance', 'Nächster Gegner'],
       ['health', 'Niedrigste HP'],
-    ]),
-    check('aimPredict', 'Bewegungs-Prediction', cfg, onField),
-    check('aimVisibleOnly', 'Nur sichtbare Ziele (LOS)', cfg, onField),
-    check('fovCircle', 'FOV-Kreis anzeigen', cfg, onField),
-    check('fovCircleLock', 'Lock-Linie zum Ziel', cfg, onField),
+    ]), aimOn),
+    markCond(check('aimPredict', 'Bewegungs-Prediction', cfg, onField), aimOn),
+    markCond(check('aimVisibleOnly', 'Nur sichtbare Ziele (LOS)', cfg, onField), aimOn),
+    markCond(check('fovCircle', 'FOV-Kreis anzeigen', cfg, onField), anyAim),
+    markCond(check('fovCircleLock', 'Lock-Linie zum Ziel', cfg, onField), { all: 'fovCircle', any: 'aimbot,aimlock' }),
   );
 
   const aim = section('Aimbot — Smooth Assist');
-  const aimHint = document.createElement('p');
+  const aimHint = markCond(document.createElement('p'), { any: 'aimbot' });
   aimHint.className = 'fs-list-hint';
   aimHint.textContent = 'Sanftes Nachziehen zum Ziel. Typisch mit Smooth 2–8 für legit, 0–1 für semi-rage.';
   aim.append(
-    aimHint,
     check('aimbot', 'Aimbot', cfg, onField),
-    slider('aimSmooth', 'Smooth', cfg, onField, 0, 20, 0.5),
-    aimKeySelect('aimKey', 'Aimbot-Taste', cfg, onField),
+    aimHint,
+    markCond(slider('aimSmooth', 'Smooth', cfg, onField, 0, 20, 0.5), { any: 'aimbot' }),
+    markCond(aimKeySelect('aimKey', 'Aimbot-Taste', cfg, onField), { any: 'aimbot' }),
   );
 
   const lock = section('Aimlock — Sticky Track');
-  const lockHint = document.createElement('p');
+  const lockHint = markCond(document.createElement('p'), { any: 'aimlock' });
   lockHint.className = 'fs-list-hint';
   lockHint.textContent = 'Hält das Ziel konstant im Visier (Sticky Lock). Smooth 0 = Snap, 0.05–0.2 = harter Lock.';
   lock.append(
-    lockHint,
     check('aimlock', 'Aimlock', cfg, onField),
-    slider('aimlockSmooth', 'Lock-Stärke', cfg, onField, 0, 5, 0.05),
-    check('aimlockSticky', 'Sticky Target (am Ziel bleiben)', cfg, onField),
-    aimKeySelect('aimlockKey', 'Aimlock-Taste', cfg, onField),
+    lockHint,
+    markCond(slider('aimlockSmooth', 'Lock-Stärke', cfg, onField, 0, 5, 0.05), { any: 'aimlock' }),
+    markCond(check('aimlockSticky', 'Sticky Target (am Ziel bleiben)', cfg, onField), { any: 'aimlock' }),
+    markCond(aimKeySelect('aimlockKey', 'Aimlock-Taste', cfg, onField), { any: 'aimlock' }),
   );
 
   const trig = section('Triggerbot');
   trig.append(
     check('triggerbot', 'Triggerbot', cfg, onField),
-    slider('triggerDelay', 'Delay ms', cfg, onField, 0, 300, 10),
-    check('triggerVisible', 'LOS-Check', cfg, onField),
-    check('triggerOnAds', 'Nur bei ADS', cfg, onField),
+    markCond(slider('triggerDelay', 'Delay ms', cfg, onField, 0, 300, 10), { any: 'triggerbot' }),
+    markCond(check('triggerVisible', 'LOS-Check', cfg, onField), { any: 'triggerbot' }),
+    markCond(check('triggerOnAds', 'Nur bei ADS', cfg, onField), { any: 'triggerbot' }),
   );
   el.append(shared, aim, lock, trig);
 }
 
 function fillVisuals(el, cfg, onField) {
+  const espOn = { any: 'esp' };
   const esp = section('ESP');
   esp.append(
     check('esp', 'ESP', cfg, onField),
-    check('espBox', 'Box', cfg, onField),
-    check('espCorner', 'Corner-Box', cfg, onField),
-    check('espName', 'Name', cfg, onField),
-    check('espHp', 'HP-Balken', cfg, onField),
-    check('espHpText', 'HP-Zahl', cfg, onField),
-    check('espDist', 'Distanz', cfg, onField),
-    check('espWeapon', 'Waffe', cfg, onField),
-    check('espSnap', 'Snaplines', cfg, onField),
-    check('espOffscreen', 'Offscreen-Pfeile', cfg, onField),
-    slider('espDistMax', 'Max-Distanz', cfg, onField, 30, 400, 10),
-    select('espColor', 'Farbe', cfg, onField, [
+    markCond(check('espBox', 'Box', cfg, onField), espOn),
+    markCond(check('espCorner', 'Corner-Box', cfg, onField), espOn),
+    markCond(check('espName', 'Name', cfg, onField), espOn),
+    markCond(check('espHp', 'HP-Balken', cfg, onField), espOn),
+    markCond(check('espHpText', 'HP-Zahl', cfg, onField), espOn),
+    markCond(check('espDist', 'Distanz', cfg, onField), espOn),
+    markCond(check('espWeapon', 'Waffe', cfg, onField), espOn),
+    markCond(check('espSnap', 'Snaplines', cfg, onField), espOn),
+    markCond(check('espOffscreen', 'Offscreen-Pfeile', cfg, onField), espOn),
+    markCond(slider('espDistMax', 'Max-Distanz', cfg, onField, 30, 400, 10), espOn),
+    markCond(select('espColor', 'Farbe', cfg, onField, [
       ['team', 'Team'], ['red', 'Rot'], ['blue', 'Blau'], ['lime', 'Lime'], ['cyan', 'Cyan'],
-    ]),
+    ]), espOn),
     check('radar', 'Radar', cfg, onField),
-    slider('radarSize', 'Radar-Größe', cfg, onField, 70, 160, 5),
+    markCond(slider('radarSize', 'Radar-Größe', cfg, onField, 70, 160, 5), { any: 'radar' }),
   );
   const ch = section('Chams');
   ch.append(
     check('chams', 'Chams / Wallhack', cfg, onField),
-    check('chamsTeam', 'Auch Teammates', cfg, onField),
-    select('chamsColor', 'Chams-Farbe', cfg, onField, [
+    markCond(check('chamsTeam', 'Auch Teammates', cfg, onField), { any: 'chams' }),
+    markCond(select('chamsColor', 'Chams-Farbe', cfg, onField, [
       ['team', 'Team'], ['red', 'Rot'], ['blue', 'Blau'], ['lime', 'Lime'], ['cyan', 'Cyan'],
-    ]),
+    ]), { any: 'chams' }),
   );
   el.append(esp, ch);
 }
@@ -435,20 +524,21 @@ function fillMisc(el, cfg, onField) {
     check('infAmmo', 'Unendlich Munition', cfg, onField),
     check('noRecoil', 'No Recoil / Spread', cfg, onField),
     check('rapidFire', 'Rapid Fire', cfg, onField),
+    check('ghostshot', 'Ghostshot (durch Wände)', cfg, onField),
   );
   const move = section('Bewegung');
   move.append(
     check('speed', 'Speedhack', cfg, onField),
-    slider('speedMult', 'Speed', cfg, onField, 1, 3, 0.05),
+    markCond(slider('speedMult', 'Speed', cfg, onField, 1, 3, 0.05), { any: 'speed' }),
     check('superJump', 'Super-Jump', cfg, onField),
-    slider('jumpBoost', 'Jump', cfg, onField, 1, 2.4, 0.05),
+    markCond(slider('jumpBoost', 'Jump', cfg, onField, 1, 2.4, 0.05), { any: 'superJump' }),
     check('infDash', 'Infinite Dash', cfg, onField),
     check('autoBhop', 'Auto-Bhop', cfg, onField),
     check('noclip', 'NoClip', cfg, onField),
-    slider('flySpeed', 'NoClip-Speed', cfg, onField, 6, 40, 1),
+    markCond(slider('flySpeed', 'NoClip-Speed', cfg, onField, 6, 40, 1), { any: 'noclip,fly' }),
     check('thirdPerson', 'Third Person', cfg, onField),
     check('spinbot', 'Spinbot', cfg, onField),
-    slider('spinSpeed', 'Spin-Geschw.', cfg, onField, 2, 30, 0.5),
+    markCond(slider('spinSpeed', 'Spin-Geschw.', cfg, onField, 2, 30, 0.5), { any: 'spinbot' }),
   );
   const ui = section('UI / Hotkeys');
   ui.append(
@@ -463,9 +553,11 @@ function fillMisc(el, cfg, onField) {
 }
 
 function transformSliders(prefix, cfg, onField, opts) {
-  const { scaleMin, scaleMax, posMin, posMax, posStep, rotMin, rotMax } = opts;
-  const frag = document.createDocumentFragment();
-  frag.append(
+  const { scaleMin, scaleMax, posMin, posMax, posStep, rotMin, rotMax, showWhen } = opts;
+  const wrap = document.createElement('div');
+  wrap.className = 'fs-transform-group';
+  if (showWhen) markCond(wrap, showWhen);
+  wrap.append(
     slider(prefix + 'Scale', 'Größe', cfg, onField, scaleMin, scaleMax, 0.05),
   );
   const pos = document.createElement('div');
@@ -484,8 +576,8 @@ function transformSliders(prefix, cfg, onField, opts) {
     slider(prefix + 'RotY', 'Rot Y (Yaw)', cfg, onField, rotMin, rotMax, 1),
     slider(prefix + 'RotZ', 'Rot Z (Roll)', cfg, onField, rotMin, rotMax, 1),
   );
-  frag.append(pos, rot);
-  return frag;
+  wrap.append(pos, rot);
+  return wrap;
 }
 
 function fillAssets(el, cfg, onField, hooks) {
@@ -496,12 +588,13 @@ function fillAssets(el, cfg, onField, hooks) {
     check('customWeapon', 'Custom-Waffe an', cfg, onField),
     transformSliders('vm', cfg, onField, {
       scaleMin: 0.2, scaleMax: 3, posMin: -0.8, posMax: 0.8, posStep: 0.01, rotMin: -180, rotMax: 180,
+      showWhen: { any: 'customWeapon' },
     }),
-    btn('Transform zurücksetzen', '', () => {
+    markCond(btn('Transform zurücksetzen', '', () => {
       resetWeaponTransform(cfg);
       refreshAllInputs(el.closest('#fs-root'), cfg);
       onField();
-    }),
+    }), { any: 'customWeapon' }),
     btn('Waffe entfernen', 'danger', async () => {
       if (hooks && hooks.clearWeapon) await hooks.clearWeapon();
       cfg.customWeapon = false;
@@ -516,12 +609,13 @@ function fillAssets(el, cfg, onField, hooks) {
     check('customPlayer', 'Custom-Modell an', cfg, onField),
     transformSliders('pm', cfg, onField, {
       scaleMin: 0.2, scaleMax: 3, posMin: -2, posMax: 2, posStep: 0.02, rotMin: -180, rotMax: 180,
+      showWhen: { any: 'customPlayer' },
     }),
-    btn('Transform zurücksetzen', '', () => {
+    markCond(btn('Transform zurücksetzen', '', () => {
       resetPlayerTransform(cfg);
       refreshAllInputs(el.closest('#fs-root'), cfg);
       onField();
-    }),
+    }), { any: 'customPlayer' }),
     btn('Modell entfernen', 'danger', async () => {
       if (hooks && hooks.clearPlayer) await hooks.clearPlayer();
       cfg.customPlayer = false;
@@ -705,6 +799,7 @@ function refreshAllInputs(root, cfg) {
       el.value = cfg[k];
     }
   });
+  updateConditionalVisibility(root, cfg);
 }
 
 function hit(x, y, cursorEl) {

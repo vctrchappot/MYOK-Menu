@@ -1,4 +1,4 @@
-import { loadConfig, toggleHotkey, saveConfig } from './config.js';
+import { loadConfig, toggleHotkey, saveConfig, hasCustomPreset, loadCustomPreset } from './config.js';
 import { discover, actorList } from './discover.js';
 import { applyFeatures, requestTeleport, requestTeleportForward, setAimContext } from './features.js';
 import {
@@ -43,7 +43,12 @@ const overlay = createOverlay(cfg, {
   },
 });
 
-initCustomAssets(cfg).then(() => overlay.refreshAssetLabels(cfg));
+initCustomAssets(cfg).then(async () => {
+  if (cfg.activePreset === 'custom' && hasCustomPreset()) {
+    await loadCustomPreset(cfg);
+  }
+  overlay.refreshAssetLabels(cfg);
+});
 
 let last = performance.now();
 

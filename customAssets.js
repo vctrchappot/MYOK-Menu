@@ -2,6 +2,8 @@ import * as THREE from '../libs/three.module.js';
 
 const DB_NAME = 'fs-menu-assets';
 const STORE = 'models';
+const PRESET_WEAPON = 'preset_weapon';
+const PRESET_PLAYER = 'preset_player';
 const DEG = Math.PI / 180;
 
 let weaponGroup = null;
@@ -215,13 +217,58 @@ function updateWeaponTransform(cfg, vm) {
   applyHolderTransform(weaponHolder, t);
 }
 
-function updatePlayerTransform(cfg, model) {
+function allowModelClip(cfg) {
+  return !!(cfg && (cfg.noclip || cfg.fly));
+}
+
+function clampPlayerModelToWorld(game, player, cfg) {
+  if (!playerHolder || !playerGroup || !game || allowModelClip(cfg)) return;
+  const world = game.world;
+  const pos = player && player.pos;
+  if (!world || !pos || typeof world.groundAt !== 'function') return;
+
+  applyHolderTransform(playerHolder, readPlayerTransform(cfg));
+  playerHolder.updateMatrixWorld(true);
+
+  const box = new THREE.Box3().setFromObject(playerGroup);
+  if (box.isEmpty()) return;
+
+  const t = readPlayerTransform(cfg);
+  let adjY = 0;
+  let adjX = t.px;
+  let adjZ = t.pz;
+
+  const groundY = world.groundAt(pos.x, pos.z, pos.y + 8);
+  if (typeof groundY === 'number') {
+    const lift = (groundY + 0.04) - box.min.y;
+    if (lift > 0) adjY = lift;
+  }
+
+  const bodyY = pos.y + (player.height || 2.2) * 0.45 + t.py;
+  const offLen = Math.hypot(t.px, t.pz);
+  if (offLen > 0.02 && typeof world.raycast === 'function') {
+    const dx = t.px / offLen, dz = t.pz / offLen;
+    const hit = world.raycast(pos.x, bodyY, pos.z, dx, 0, dz, offLen + 0.35);
+    if (hit && hit.t < offLen + 0.1) {
+      const allowed = Math.max(0, hit.t - 0.25);
+      const s = allowed / offLen;
+      adjX = t.px * s;
+      adjZ = t.pz * s;
+    }
+  }
+
+  playerHolder.position.set(adjX, t.py + adjY, adjZ);
+  playerHolder.rotation.set(t.rx * DEG, t.ry * DEG, t.rz * DEG);
+}
+
+function updatePlayerTransform(cfg, model, game, player) {
   const t = readPlayerTransform(cfg);
   if (!playerHolder || playerHolder.userData.baseScale !== t.scale) {
     if (pendingPlayer && model) attachPlayer(model, pendingPlayer.group, t);
-    return;
+  } else {
+    applyHolderTransform(playerHolder, t);
   }
-  applyHolderTransform(playerHolder, t);
+  clampPlayerModelToWorld(game, player, cfg);
 }
 
 export function clearWeapon() {
@@ -302,7 +349,7 @@ export function applyCustomAssets(game, player, cfg) {
   }
 
   if (cfg.customPlayer && pendingPlayer && model) {
-    updatePlayerTransform(cfg, model);
+    updatePlayerTransform(cfg, model, game, player);
     model.setVisible(true);
     if (model.tag && model.tag.sprite) model.tag.sprite.visible = false;
   } else if (!cfg.customPlayer) {
@@ -313,6 +360,81 @@ export function applyCustomAssets(game, player, cfg) {
 export function setPendingWeapon(data) { pendingWeapon = data; }
 export function setPendingPlayer(data) { pendingPlayer = data; }
 export function getAssetStatus() { return statusMsg; }
+
+async function copyBlobEntry(fromKey, toKey) {
+  const row = await loadBlob(fromKey);
+  if (row && row.blob) {
+    await saveBlob(toKey, row.blob, row.name);
+    return { name: row.name };
+  }
+  await deleteBlob(toKey);
+  return null;
+}
+
+/** Modelle + Metadaten für Custom-Preset sichern. */
+export async function snapshotModelsForPreset() {
+  const weapon = await copyBlobEntry('weapon', PRESET_WEAPON);
+  const player = await copyBlobEntry('player', PRESET_PLAYER);
+  return {
+    weapon: weapon ? { name: weapon.name } : null,
+    player: player ? { name: player.name } : null,
+  };
+}
+
+async function restoreWeaponFromPreset(enabled) {
+  clearWeapon();
+  pendingWeapon = null;
+  if (!enabled) {
+    await deleteBlob('weapon');
+    return null;
+  }
+  const snap = await loadBlob(PRESET_WEAPON);
+  if (!snap || !snap.blob) {
+    await deleteBlob('weapon');
+    return null;
+  }
+  await saveBlob('weapon', snap.blob, snap.name);
+  return loadWeaponFromStore();
+}
+
+async function restorePlayerFromPreset(enabled) {
+  clearPlayer();
+  pendingPlayer = null;
+  if (!enabled) {
+    await deleteBlob('player');
+    return null;
+  }
+  const snap = await loadBlob(PRESET_PLAYER);
+  if (!snap || !snap.blob) {
+    await deleteBlob('player');
+    return null;
+  }
+  await saveBlob('player', snap.blob, snap.name);
+  return loadPlayerFromStore();
+}
+
+/** Modelle aus Custom-Preset wiederherstellen (nach applySettingsSnapshot). */
+export async function restoreModelsFromPreset(cfg) {
+  try {
+    if (cfg.customWeapon) {
+      const w = await restoreWeaponFromPreset(true);
+      if (w) cfg.customWeaponName = w.name;
+      else { cfg.customWeapon = false; cfg.customWeaponName = ''; }
+    } else {
+      await restoreWeaponFromPreset(false);
+    }
+
+    if (cfg.customPlayer) {
+      const p = await restorePlayerFromPreset(true);
+      if (p) cfg.customPlayerName = p.name;
+      else { cfg.customPlayer = false; cfg.customPlayerName = ''; }
+    } else {
+      await restorePlayerFromPreset(false);
+    }
+  } catch (e) {
+    statusMsg = 'Preset-Modelle konnten nicht geladen werden';
+  }
+}
 
 export async function initCustomAssets(cfg) {
   try {

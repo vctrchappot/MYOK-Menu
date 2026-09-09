@@ -12,6 +12,12 @@ const wrappedDmg = new WeakSet();
 const wrappedRecoil = new WeakSet();
 const wrappedPhys = new WeakSet();
 const wrappedInput = new WeakSet();
+const wrappedRapid = new WeakSet();
+const wrappedGhost = new WeakSet();
+const wrappedSpinGame = new WeakSet();
+let spinAngle = 0;
+
+const ghostState = { depth: 0, on: false };
 
 const aimCtx = { cfg: null, menuOpen: false, game: null, hasTarget: false };
 
@@ -93,6 +99,41 @@ function wrapRecoil(player) {
   };
 }
 
+function wrapGhostshot(game) {
+  if (!game || wrappedGhost.has(game)) return;
+  wrappedGhost.add(game);
+
+  if (game.world && typeof game.world.raycast === 'function' && !game.world._fsGhostWrap) {
+    game.world._fsGhostWrap = true;
+    const origRay = game.world.raycast.bind(game.world);
+    game.world.raycast = function (...args) {
+      if (ghostState.depth > 0) return null;
+      return origRay(...args);
+    };
+  }
+
+  if (typeof game._hitscan === 'function') {
+    const origHitscan = game._hitscan.bind(game);
+    game._hitscan = function (shooter, ...rest) {
+      const use = ghostState.on && shooter && shooter.isLocal;
+      if (use) ghostState.depth++;
+      try { return origHitscan(shooter, ...rest); }
+      finally { if (use) ghostState.depth--; }
+    };
+  }
+
+  if (typeof game.updateProjectiles === 'function') {
+    const origProj = game.updateProjectiles.bind(game);
+    game.updateProjectiles = function (dt) {
+      const use = ghostState.on && Array.isArray(game.projectiles)
+        && game.projectiles.some((p) => p.owner && p.owner.isLocal);
+      if (use) ghostState.depth++;
+      try { return origProj(dt); }
+      finally { if (use) ghostState.depth--; }
+    };
+  }
+}
+
 function wrapPhysics(player) {
   if (!player || wrappedPhys.has(player)) return;
   if (typeof player.updatePhysics !== 'function') return;
@@ -104,6 +145,40 @@ function wrapPhysics(player) {
       return;
     }
     return orig(dt, world);
+  };
+}
+
+/** Rapid Fire: Feuerrate-Cooldown umgehen, Halbautomaten wie Vollautomaten behandeln. */
+function wrapRapidFire(player) {
+  if (!player || wrappedRapid.has(player)) return;
+  if (typeof player.updateWeapons !== 'function') return;
+  wrappedRapid.add(player);
+
+  const origWeapons = player.updateWeapons.bind(player);
+  let origDoFire = null;
+  if (typeof player._doFire === 'function') {
+    origDoFire = player._doFire.bind(player);
+    player._doFire = function() {
+      origDoFire();
+      if (wrapRapidFire._on) {
+        this.fireTimer = 0;
+        this.burstLeft = 0;
+        this.burstTimer = 0;
+      }
+    };
+  }
+
+  player.updateWeapons = function(dt) {
+    const rapid = wrapRapidFire._on && this.alive && this.intent && this.intent.fire;
+    if (rapid) {
+      const w = this.weapon;
+      if (w && !w.melee && this.reloadTimer <= 0 && this.switchTimer <= 0) {
+        this.fireTimer = Math.min(this.fireTimer, 0);
+        this.burstTimer = 0;
+        if (!w.auto) this.triggerHeld = false;
+      }
+    }
+    origWeapons(dt);
   };
 }
 
@@ -583,13 +658,28 @@ function applyThirdPerson(player, cfg) {
   } catch (e) { /* ignore */ }
 }
 
-function applySpinbot(player, cfg, dt) {
-  if (!cfg.spinbot || !player.alive) return;
-  if (typeof player.yaw !== 'number') return;
-  const speed = (cfg.spinSpeed || 10) * dt;
-  player.yaw += speed;
-  while (player.yaw > Math.PI) player.yaw -= Math.PI * 2;
-  while (player.yaw < -Math.PI) player.yaw += Math.PI * 2;
+/** Spinbot dreht nur das sichtbare Modell — Kamera (player.yaw) bleibt unberührt. */
+function wrapSpinGame(game) {
+  if (!game || wrappedSpinGame.has(game)) return;
+  if (typeof game.postUpdate !== 'function') return;
+  wrappedSpinGame.add(game);
+  const orig = game.postUpdate.bind(game);
+  game.postUpdate = function(dt) {
+    orig(dt);
+    const cfg = aimCtx.cfg;
+    const player = getPlayer(game);
+    if (!cfg || !player || !player.alive || !cfg.spinbot) {
+      if (!cfg || !cfg.spinbot) spinAngle = 0;
+      return;
+    }
+    spinAngle += (cfg.spinSpeed || 10) * dt;
+    while (spinAngle > Math.PI) spinAngle -= Math.PI * 2;
+    while (spinAngle < -Math.PI) spinAngle += Math.PI * 2;
+    const model = player.model;
+    if (model && model.root && typeof player.yaw === 'number') {
+      model.root.rotation.y = player.yaw + spinAngle;
+    }
+  };
 }
 
 function suppressFire(player, input) {
@@ -607,8 +697,10 @@ export function applyFeatures(dt, ctx) {
   const now = performance.now();
   wrapGod._on = !!(cfg && cfg.godmode);
   wrapRecoil._on = !!(cfg && cfg.noRecoil);
+  wrapRapidFire._on = !!(cfg && cfg.rapidFire);
   flyCfg._on = !!(cfg && (cfg.noclip || cfg.fly));
   flyCfg._speed = cfg ? cfg.flySpeed : 18;
+  ghostState.on = !!(cfg && cfg.ghostshot);
 
   if (!game || !cfg) {
     stickyTarget = null;
@@ -622,6 +714,9 @@ export function applyFeatures(dt, ctx) {
     currentAimTarget = null;
   }
 
+  wrapGhostshot(game);
+  wrapSpinGame(game);
+
   const player = getPlayer(game);
   const camera = getCamera(game);
   const world = game.world || null;
@@ -631,6 +726,7 @@ export function applyFeatures(dt, ctx) {
   if (player) {
     wrapGod(player);
     wrapRecoil(player);
+    wrapRapidFire(player);
     wrapPhysics(player);
     wrapHandleInput(player);
 
@@ -643,11 +739,9 @@ export function applyFeatures(dt, ctx) {
     }
     if (cfg.infAmmo) refillAmmo(player);
     if (cfg.noRecoil) zeroRecoil(player);
-    if (cfg.rapidFire && typeof player.fireTimer === 'number') player.fireTimer = 0;
     if (cfg.infDash && typeof player.dashCooldown === 'number') player.dashCooldown = 0;
     if (cfg.autoBhop && player.intent) player.intent.autoJump = true;
     applyThirdPerson(player, cfg);
-    applySpinbot(player, cfg, dt);
     applySpeed(player, cfg);
     applyJump(player, cfg);
     applyTeleport(player);
