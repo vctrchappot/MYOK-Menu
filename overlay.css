@@ -25,11 +25,14 @@
 #fs-esp {
   position: absolute;
   inset: 0;
+  z-index: 0;
   width: 100%;
   height: 100%;
   display: block;
   pointer-events: none;
 }
+
+#fs-panel { z-index: 2; }
 
 #fs-watermark {
   position: absolute;
@@ -477,6 +480,10 @@
   background: #55dd55;
   box-shadow: 0 0 6px rgba(85, 221, 85, 0.45);
 }
+.fs-statusbar.warn .fs-dot {
+  background: #ffcc00;
+  box-shadow: 0 0 6px rgba(255, 204, 0, 0.45);
+}
 .fs-status {
   font-size: 11px;
   font-weight: 600;
@@ -485,7 +492,74 @@
   letter-spacing: 0.02em;
 }
 .fs-statusbar.ok .fs-status { color: #9dccb0; }
+.fs-statusbar.warn .fs-status { color: #e8d48a; }
 .fs-statusbar.bad .fs-status { color: #ff9a9a; }
+
+.fs-preset-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  padding: 0 2px 4px;
+}
+
+.fs-preset-btn {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  padding: 10px 12px;
+  border: 1px solid var(--fs-stroke);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.03);
+  color: var(--fs-text);
+  cursor: pointer;
+  text-align: left;
+  font-family: var(--fs-font);
+  transition: border-color 0.12s, background 0.12s, box-shadow 0.12s;
+}
+
+.fs-preset-btn strong {
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: var(--fs-accent);
+}
+
+.fs-preset-btn span {
+  font-size: 11px;
+  line-height: 1.35;
+  color: var(--fs-dim);
+}
+
+.fs-preset-btn:hover {
+  border-color: rgba(255, 204, 0, 0.35);
+  background: rgba(255, 204, 0, 0.06);
+}
+
+.fs-preset-btn.active {
+  border-color: rgba(90, 230, 210, 0.55);
+  background: rgba(90, 230, 210, 0.1);
+  box-shadow: 0 0 0 1px rgba(90, 230, 210, 0.15) inset;
+}
+
+.fs-preset-btn.active strong { color: var(--fs-teal); }
+
+.fs-subsection {
+  margin: 6px 0 2px;
+  padding: 8px 10px;
+  border: 1px solid rgba(255, 255, 255, 0.05);
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.15);
+}
+
+.fs-subsection-title {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--fs-dim);
+  margin-bottom: 6px;
+}
 
 .fs-foot {
   padding: 0 10px 10px;

@@ -119,8 +119,10 @@ export function enemies(game, self) {
 }
 
 export function getCamera(game) {
-  if (game && looksLikeCamera(game.camera)) return game.camera;
-  return null;
+  if (!game || !game.camera) return null;
+  const c = game.camera;
+  if (typeof c.fov === 'number' && c.position) return c;
+  return looksLikeCamera(c) ? c : null;
 }
 
 export function getModelRoot(actor) {

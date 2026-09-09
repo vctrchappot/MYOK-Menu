@@ -1,6 +1,10 @@
-import { saveConfig, resetConfig, anyFeatureOn } from './config.js';
+import {
+  saveConfig, resetConfig, anyFeatureOn, PRESETS, applyPreset,
+  resetWeaponTransform, resetPlayerTransform,
+} from './config.js';
 
 const TABS = [
+  { id: 'presets', label: 'Presets' },
   { id: 'aim', label: 'Aim' },
   { id: 'visuals', label: 'Visuals' },
   { id: 'misc', label: 'Misc' },
@@ -11,7 +15,7 @@ const TABS = [
 export function createOverlay(cfg, hooks) {
   const state = {
     open: false,
-    tab: 'aim',
+    tab: 'presets',
     cursor: { x: cfg.panelX || 72, y: cfg.panelY || 72 },
     dragging: null,
     dragPanel: false,
@@ -39,6 +43,7 @@ export function createOverlay(cfg, hooks) {
       </div>
       <div class="fs-tabs"></div>
       <div class="fs-body">
+        <div class="fs-page" data-page="presets"></div>
         <div class="fs-page" data-page="aim"></div>
         <div class="fs-page" data-page="visuals"></div>
         <div class="fs-page" data-page="misc"></div>
@@ -75,6 +80,7 @@ export function createOverlay(cfg, hooks) {
     tabsEl.appendChild(b);
   }
 
+  fillPresets(root.querySelector('[data-page="presets"]'), cfg, onField, root);
   fillAim(root.querySelector('[data-page="aim"]'), cfg, onField);
   fillVisuals(root.querySelector('[data-page="visuals"]'), cfg, onField);
   fillMisc(root.querySelector('[data-page="misc"]'), cfg, onField);
@@ -255,12 +261,18 @@ export function createOverlay(cfg, hooks) {
       badgeEl.textContent = active + ' aktiv';
       badgeEl.classList.toggle('idle', active === 0);
     }
-    if (info && info.found) {
+    if (info && info.inMatch) {
       statusBar.className = 'fs-statusbar ok';
-      statusEl.textContent = `Verbunden · ${info.source} · ${info.actors} Akteure`;
+      statusEl.textContent = `Verbunden · ${info.actors} Akteure`;
+    } else if (info && info.found) {
+      statusBar.className = 'fs-statusbar warn';
+      statusEl.textContent = 'Spiel bereit — Match starten';
+    } else if (info && info.host) {
+      statusBar.className = 'fs-statusbar warn';
+      statusEl.textContent = 'FRAGSTORM geladen — Play drücken';
     } else {
       statusBar.className = 'fs-statusbar bad';
-      statusEl.textContent = 'Kein Game — Match starten, dann Insert/Home';
+      statusEl.textContent = 'FRAGSTORM nicht gefunden — Server aus fake-krunker-main starten';
     }
   }
 
@@ -293,29 +305,96 @@ function section(title) {
   return el;
 }
 
+function fillPresets(el, cfg, onField, root) {
+  const intro = document.createElement('p');
+  intro.className = 'fs-list-hint';
+  intro.textContent = 'Schnellprofile laden — überschreibt Aim-, Visual- und Misc-Einstellungen.';
+  el.appendChild(intro);
+
+  const grid = document.createElement('div');
+  grid.className = 'fs-preset-grid';
+  grid.id = 'fs-preset-grid';
+
+  for (const [id, p] of Object.entries(PRESETS)) {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'fs-preset-btn' + (cfg.activePreset === id ? ' active' : '');
+    b.dataset.preset = id;
+    b.innerHTML = `<strong>${p.label}</strong><span>${p.desc}</span>`;
+    b.addEventListener('click', () => {
+      applyPreset(cfg, id);
+      refreshAllInputs(root, cfg);
+      grid.querySelectorAll('.fs-preset-btn').forEach((btn) => {
+        btn.classList.toggle('active', btn.dataset.preset === id);
+      });
+      onField();
+    });
+    grid.appendChild(b);
+  }
+  el.appendChild(grid);
+
+  const hint = document.createElement('p');
+  hint.className = 'fs-list-hint';
+  hint.innerHTML = '<b>Aimbot</b> = sanftes Zielen · <b>Aimlock</b> = hartes Sticky-Tracking (wie in den meisten Cheats)';
+  el.appendChild(hint);
+}
+
+function aimKeySelect(key, label, cfg, onField) {
+  return select(key, label, cfg, onField, [
+    ['always', 'Immer'],
+    ['aim', 'Aim (RMB)'],
+    ['fire', 'Feuer (LMB)'],
+  ]);
+}
+
 function fillAim(el, cfg, onField) {
-  const aim = section('Aimbot');
-  aim.append(
-    check('aimbot', 'Aimbot', cfg, onField),
-    slider('aimFov', 'FOV', cfg, onField, 0, 100, 1),
-    slider('aimSmooth', 'Smooth', cfg, onField, 0, 20, 0.5),
+  const shared = section('Gemeinsam');
+  shared.append(
+    slider('aimFov', 'FOV-Radius', cfg, onField, 0, 100, 1),
     slider('aimDist', 'Max-Distanz', cfg, onField, 20, 250, 5),
-    select('aimBone', 'Knochen', cfg, onField, [['head', 'Kopf'], ['body', 'Körper']]),
-    check('aimPredict', 'Prediction', cfg, onField),
-    check('aimVisibleOnly', 'Nur sichtbare Ziele', cfg, onField),
-    select('aimKey', 'Aktivierung', cfg, onField, [
-      ['always', 'Immer'], ['aim', 'Aim (RMB)'], ['fire', 'Feuer (LMB)'],
+    select('aimBone', 'Zielpunkt', cfg, onField, [['head', 'Kopf'], ['body', 'Körper']]),
+    select('aimPriority', 'Priorität', cfg, onField, [
+      ['crosshair', 'Nächstes zum Fadenkreuz'],
+      ['distance', 'Nächster Gegner'],
+      ['health', 'Niedrigste HP'],
     ]),
-    check('fovCircle', 'FOV-Kreis', cfg, onField),
+    check('aimPredict', 'Bewegungs-Prediction', cfg, onField),
+    check('aimVisibleOnly', 'Nur sichtbare Ziele (LOS)', cfg, onField),
+    check('fovCircle', 'FOV-Kreis anzeigen', cfg, onField),
+    check('fovCircleLock', 'Lock-Linie zum Ziel', cfg, onField),
   );
-  const trig = section('Trigger');
+
+  const aim = section('Aimbot — Smooth Assist');
+  const aimHint = document.createElement('p');
+  aimHint.className = 'fs-list-hint';
+  aimHint.textContent = 'Sanftes Nachziehen zum Ziel. Typisch mit Smooth 2–8 für legit, 0–1 für semi-rage.';
+  aim.append(
+    aimHint,
+    check('aimbot', 'Aimbot', cfg, onField),
+    slider('aimSmooth', 'Smooth', cfg, onField, 0, 20, 0.5),
+    aimKeySelect('aimKey', 'Aimbot-Taste', cfg, onField),
+  );
+
+  const lock = section('Aimlock — Sticky Track');
+  const lockHint = document.createElement('p');
+  lockHint.className = 'fs-list-hint';
+  lockHint.textContent = 'Hält das Ziel konstant im Visier (Sticky Lock). Smooth 0 = Snap, 0.05–0.2 = harter Lock.';
+  lock.append(
+    lockHint,
+    check('aimlock', 'Aimlock', cfg, onField),
+    slider('aimlockSmooth', 'Lock-Stärke', cfg, onField, 0, 5, 0.05),
+    check('aimlockSticky', 'Sticky Target (am Ziel bleiben)', cfg, onField),
+    aimKeySelect('aimlockKey', 'Aimlock-Taste', cfg, onField),
+  );
+
+  const trig = section('Triggerbot');
   trig.append(
     check('triggerbot', 'Triggerbot', cfg, onField),
     slider('triggerDelay', 'Delay ms', cfg, onField, 0, 300, 10),
     check('triggerVisible', 'LOS-Check', cfg, onField),
     check('triggerOnAds', 'Nur bei ADS', cfg, onField),
   );
-  el.append(aim, trig);
+  el.append(shared, aim, lock, trig);
 }
 
 function fillVisuals(el, cfg, onField) {
@@ -376,10 +455,37 @@ function fillMisc(el, cfg, onField) {
     slider('panelOpacity', 'Menü-Opacity', cfg, onField, 0.6, 1, 0.02),
     select('hkGod', 'Hotkey God', cfg, onField, hotkeyOpts(), cfg.hkGod),
     select('hkEsp', 'Hotkey ESP', cfg, onField, hotkeyOpts(), cfg.hkEsp),
-    select('hkAim', 'Hotkey Aim', cfg, onField, hotkeyOpts(), cfg.hkAim),
+    select('hkAim', 'Hotkey Aimbot', cfg, onField, hotkeyOpts(), cfg.hkAim),
+    select('hkLock', 'Hotkey Aimlock', cfg, onField, hotkeyOpts(), cfg.hkLock),
     select('hkSpeed', 'Hotkey Speed', cfg, onField, hotkeyOpts(), cfg.hkSpeed),
   );
   el.append(combat, move, ui);
+}
+
+function transformSliders(prefix, cfg, onField, opts) {
+  const { scaleMin, scaleMax, posMin, posMax, posStep, rotMin, rotMax } = opts;
+  const frag = document.createDocumentFragment();
+  frag.append(
+    slider(prefix + 'Scale', 'Größe', cfg, onField, scaleMin, scaleMax, 0.05),
+  );
+  const pos = document.createElement('div');
+  pos.className = 'fs-subsection';
+  pos.innerHTML = '<div class="fs-subsection-title">Position (X / Y / Z)</div>';
+  pos.append(
+    slider(prefix + 'PosX', 'Pos X', cfg, onField, posMin, posMax, posStep),
+    slider(prefix + 'PosY', 'Pos Y', cfg, onField, posMin, posMax, posStep),
+    slider(prefix + 'PosZ', 'Pos Z', cfg, onField, posMin, posMax, posStep),
+  );
+  const rot = document.createElement('div');
+  rot.className = 'fs-subsection';
+  rot.innerHTML = '<div class="fs-subsection-title">Rotation (Grad)</div>';
+  rot.append(
+    slider(prefix + 'RotX', 'Rot X (Pitch)', cfg, onField, rotMin, rotMax, 1),
+    slider(prefix + 'RotY', 'Rot Y (Yaw)', cfg, onField, rotMin, rotMax, 1),
+    slider(prefix + 'RotZ', 'Rot Z (Roll)', cfg, onField, rotMin, rotMax, 1),
+  );
+  frag.append(pos, rot);
+  return frag;
 }
 
 function fillAssets(el, cfg, onField, hooks) {
@@ -388,7 +494,14 @@ function fillAssets(el, cfg, onField, hooks) {
     fileRow('weapon-file', 'Waffe hochladen', '.obj,.glb,.gltf'),
     labelRow('customWeaponName', cfg.customWeaponName || 'Keine Datei'),
     check('customWeapon', 'Custom-Waffe an', cfg, onField),
-    slider('vmScale', 'Waffen-Scale', cfg, onField, 0.2, 3, 0.05),
+    transformSliders('vm', cfg, onField, {
+      scaleMin: 0.2, scaleMax: 3, posMin: -0.8, posMax: 0.8, posStep: 0.01, rotMin: -180, rotMax: 180,
+    }),
+    btn('Transform zurücksetzen', '', () => {
+      resetWeaponTransform(cfg);
+      refreshAllInputs(el.closest('#fs-root'), cfg);
+      onField();
+    }),
     btn('Waffe entfernen', 'danger', async () => {
       if (hooks && hooks.clearWeapon) await hooks.clearWeapon();
       cfg.customWeapon = false;
@@ -401,7 +514,14 @@ function fillAssets(el, cfg, onField, hooks) {
     fileRow('player-file', 'Modell hochladen', '.obj,.glb,.gltf'),
     labelRow('customPlayerName', cfg.customPlayerName || 'Keine Datei'),
     check('customPlayer', 'Custom-Modell an', cfg, onField),
-    slider('pmScale', 'Modell-Scale', cfg, onField, 0.2, 3, 0.05),
+    transformSliders('pm', cfg, onField, {
+      scaleMin: 0.2, scaleMax: 3, posMin: -2, posMax: 2, posStep: 0.02, rotMin: -180, rotMax: 180,
+    }),
+    btn('Transform zurücksetzen', '', () => {
+      resetPlayerTransform(cfg);
+      refreshAllInputs(el.closest('#fs-root'), cfg);
+      onField();
+    }),
     btn('Modell entfernen', 'danger', async () => {
       if (hooks && hooks.clearPlayer) await hooks.clearPlayer();
       cfg.customPlayer = false;
@@ -411,7 +531,7 @@ function fillAssets(el, cfg, onField, hooks) {
   );
   const hint = document.createElement('p');
   hint.className = 'fs-list-hint';
-  hint.textContent = 'Spielermodelle brauchen Third Person. Formate: OBJ, GLB, GLTF. Nur lokal sichtbar.';
+  hint.textContent = 'Größe, Position und Rotation live anpassbar. Spielermodelle brauchen Third Person. Formate: OBJ, GLB, GLTF.';
   el.append(hint, wpn, ply);
 
   el.querySelector('#weapon-file').addEventListener('change', async (e) => {

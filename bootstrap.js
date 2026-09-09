@@ -53,19 +53,32 @@ function loop(now) {
   last = now;
   if (dt > 0.08) dt = 0.08;
 
-  const found = discover(now);
-  const game = found && found.game;
-  setAimContext({ cfg, menuOpen: overlay.open, game });
-  const info = applyFeatures(dt, {
-    cfg,
-    game,
-    input: found && found.input,
-    menuOpen: overlay.open,
-    canvas: overlay.canvas,
-  });
+  let found = null;
+  let game = null;
+  let info = { actors: 0, active: 0, rows: [] };
+
+  try {
+    found = discover(now);
+    game = found && found.game;
+    setAimContext({ cfg, menuOpen: overlay.open, game });
+    info = applyFeatures(dt, {
+      cfg,
+      game,
+      input: found && found.input,
+      menuOpen: overlay.open,
+      canvas: overlay.canvas,
+    }) || info;
+  } catch (err) {
+    console.error('[FRAGTRAINER]', err);
+  }
+
+  const host = !!(window.__FRAGSTORM__ || window.__KRUNKER__);
+  const inMatch = !!(game && game.running && game.world);
 
   overlay.frame({
+    host,
     found: !!game,
+    inMatch,
     source: found ? found.source : '',
     actors: info.actors || (game ? actorList(game).length : 0),
     active: info.active || 0,

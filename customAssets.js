@@ -2,6 +2,7 @@ import * as THREE from '../libs/three.module.js';
 
 const DB_NAME = 'fs-menu-assets';
 const STORE = 'models';
+const DEG = Math.PI / 180;
 
 let weaponGroup = null;
 let playerGroup = null;
@@ -45,6 +46,36 @@ function normalizeGroup(group, targetHeight) {
   const s = targetHeight / h;
   group.scale.setScalar(s);
   return group;
+}
+
+function readWeaponTransform(cfg) {
+  return {
+    scale: cfg.vmScale ?? 1,
+    px: cfg.vmPosX ?? 0,
+    py: cfg.vmPosY ?? 0,
+    pz: cfg.vmPosZ ?? 0,
+    rx: cfg.vmRotX ?? 0,
+    ry: cfg.vmRotY ?? 0,
+    rz: cfg.vmRotZ ?? 0,
+  };
+}
+
+function readPlayerTransform(cfg) {
+  return {
+    scale: cfg.pmScale ?? 1,
+    px: cfg.pmPosX ?? 0,
+    py: cfg.pmPosY ?? 0,
+    pz: cfg.pmPosZ ?? 0,
+    rx: cfg.pmRotX ?? 0,
+    ry: cfg.pmRotY ?? 0,
+    rz: cfg.pmRotZ ?? 0,
+  };
+}
+
+function applyHolderTransform(holder, t) {
+  if (!holder) return;
+  holder.position.set(t.px, t.py, t.pz);
+  holder.rotation.set(t.rx * DEG, t.ry * DEG, t.rz * DEG);
 }
 
 async function parseFile(file) {
@@ -146,29 +177,51 @@ function wrapViewModel(vm) {
   };
 }
 
-function attachWeapon(vm, group, scale) {
+function attachWeapon(vm, group, t) {
   if (!vm || !vm.root) return;
   wrapViewModel(vm);
   clearWeapon();
   weaponGroup = group.clone(true);
   normalizeGroup(weaponGroup, 0.45);
-  weaponGroup.scale.multiplyScalar(scale || 1);
+  weaponGroup.scale.multiplyScalar(t.scale || 1);
   weaponHolder = new THREE.Group();
+  weaponHolder.userData.baseScale = t.scale;
   weaponHolder.add(weaponGroup);
+  applyHolderTransform(weaponHolder, t);
   vm.root.add(weaponHolder);
   hideVmParts(vm);
 }
 
-function attachPlayer(model, group, scale) {
+function attachPlayer(model, group, t) {
   if (!model || !model.pivot) return;
   clearPlayer();
   playerGroup = group.clone(true);
   normalizeGroup(playerGroup, 2.2);
-  playerGroup.scale.multiplyScalar(scale || 1);
+  playerGroup.scale.multiplyScalar(t.scale || 1);
   playerHolder = new THREE.Group();
+  playerHolder.userData.baseScale = t.scale;
   playerHolder.add(playerGroup);
+  applyHolderTransform(playerHolder, t);
   model.pivot.add(playerHolder);
   hidePlayerParts(model);
+}
+
+function updateWeaponTransform(cfg, vm) {
+  const t = readWeaponTransform(cfg);
+  if (!weaponHolder || weaponHolder.userData.baseScale !== t.scale) {
+    if (pendingWeapon && vm) attachWeapon(vm, pendingWeapon.group, t);
+    return;
+  }
+  applyHolderTransform(weaponHolder, t);
+}
+
+function updatePlayerTransform(cfg, model) {
+  const t = readPlayerTransform(cfg);
+  if (!playerHolder || playerHolder.userData.baseScale !== t.scale) {
+    if (pendingPlayer && model) attachPlayer(model, pendingPlayer.group, t);
+    return;
+  }
+  applyHolderTransform(playerHolder, t);
 }
 
 export function clearWeapon() {
@@ -189,6 +242,7 @@ export async function uploadWeapon(file) {
   const group = await parseFile(file);
   await saveBlob('weapon', file, file.name);
   pendingWeapon = { group, name: file.name };
+  clearWeapon();
   statusMsg = 'Waffe: ' + file.name;
   return pendingWeapon;
 }
@@ -197,6 +251,7 @@ export async function uploadPlayerModel(file) {
   const group = await parseFile(file);
   await saveBlob('player', file, file.name);
   pendingPlayer = { group, name: file.name };
+  clearPlayer();
   statusMsg = 'Modell: ' + file.name;
   return pendingPlayer;
 }
@@ -241,19 +296,13 @@ export function applyCustomAssets(game, player, cfg) {
   const model = player.model;
 
   if (cfg.customWeapon && pendingWeapon && vm) {
-    if (!weaponHolder || weaponHolder.userData.scale !== cfg.vmScale) {
-      attachWeapon(vm, pendingWeapon.group, cfg.vmScale || 1);
-      if (weaponHolder) weaponHolder.userData.scale = cfg.vmScale;
-    }
+    updateWeaponTransform(cfg, vm);
   } else if (!cfg.customWeapon) {
     clearWeapon();
   }
 
   if (cfg.customPlayer && pendingPlayer && model) {
-    if (!playerHolder || playerHolder.userData.scale !== cfg.pmScale) {
-      attachPlayer(model, pendingPlayer.group, cfg.pmScale || 1);
-      if (playerHolder) playerHolder.userData.scale = cfg.pmScale;
-    }
+    updatePlayerTransform(cfg, model);
     model.setVisible(true);
     if (model.tag && model.tag.sprite) model.tag.sprite.visible = false;
   } else if (!cfg.customPlayer) {
