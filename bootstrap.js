@@ -1,6 +1,6 @@
 import { loadConfig, toggleHotkey, saveConfig } from './config.js';
 import { discover, actorList } from './discover.js';
-import { applyFeatures, requestTeleport, requestTeleportForward } from './features.js';
+import { applyFeatures, requestTeleport, requestTeleportForward, setAimContext } from './features.js';
 import {
   initCustomAssets, uploadWeapon, uploadPlayerModel,
   removeWeapon, removePlayerModel, getAssetStatus,
@@ -55,6 +55,7 @@ function loop(now) {
 
   const found = discover(now);
   const game = found && found.game;
+  setAimContext({ cfg, menuOpen: overlay.open, game });
   const info = applyFeatures(dt, {
     cfg,
     game,

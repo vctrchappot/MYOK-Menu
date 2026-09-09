@@ -11,6 +11,15 @@ import { applyCustomAssets } from './customAssets.js';
 const wrappedDmg = new WeakSet();
 const wrappedRecoil = new WeakSet();
 const wrappedPhys = new WeakSet();
+const wrappedInput = new WeakSet();
+
+const aimCtx = { cfg: null, menuOpen: false, game: null };
+
+export function setAimContext(ctx) {
+  aimCtx.cfg = ctx.cfg;
+  aimCtx.menuOpen = !!ctx.menuOpen;
+  aimCtx.game = ctx.game || null;
+}
 const chamsOrig = new WeakMap();
 const speedState = new WeakMap();
 
@@ -176,13 +185,20 @@ function applyJump(player, cfg) {
   wasGrounded = grounded;
 }
 
+function eyePosForAim(actor, out) {
+  if (actor && typeof actor.eyePos === 'function') {
+    try { return actor.eyePos(out); } catch (e) { /* ignore */ }
+  }
+  return eyePos(actor, out);
+}
+
 function bonePos(actor, bone, out) {
+  if (bone === 'head') return eyePosForAim(actor, out);
   const p = getPos(actor);
   if (!p) return null;
   out.x = p.x;
   out.z = p.z;
-  const head = bone === 'head' || (bone !== 'body' && bone !== false);
-  out.y = p.y + (head ? eyeHeightOf(actor) : getHeight(actor) * 0.62);
+  out.y = p.y + getHeight(actor) * 0.62;
   return out;
 }
 
@@ -193,15 +209,31 @@ function eyeHeightOf(actor) {
   return getHeight(actor) * (actor.crouching ? 0.53 : 0.87);
 }
 
-function predictPos(actor, bone, dist, out) {
+function bulletLeadTime(player, dist) {
+  const w = player && player.weapon;
+  if (!w) return 0;
+  if (w.projectile && w.projectile.speed > 0) return clamp(dist / w.projectile.speed, 0, 0.45);
+  return clamp(dist / 9000, 0, 0.06);
+}
+
+function predictPos(actor, bone, dist, out, player) {
   bonePos(actor, bone, out);
   if (!actor.vel) return out;
-  const bulletSpeed = (actor.weapon && actor.weapon.projectile && actor.weapon.projectile.speed) || 800;
-  const t = clamp(dist / bulletSpeed, 0, 0.35);
+  const t = bulletLeadTime(player, dist);
   out.x += actor.vel.x * t;
   out.y += actor.vel.y * t;
   out.z += actor.vel.z * t;
   return out;
+}
+
+function effectiveAimFov(cfg) {
+  return cfg.aimFov > 0 ? cfg.aimFov : 180;
+}
+
+function aimStrength(cfg, dt) {
+  const smooth = cfg.aimSmooth;
+  if (smooth <= 0) return 1;
+  return 1 - Math.exp(-dt * (58 / Math.max(0.25, smooth)));
 }
 
 function aimAngles(ex, ey, ez, tx, ty, tz) {
@@ -234,20 +266,26 @@ function aimKeyHeld(cfg, player, input) {
 function pickTarget(game, player, cfg, world) {
   const list = enemies(game, player);
   if (!list.length) return null;
-  const eye = eyePos(player, _eye);
+  const eye = eyePosForAim(player, _eye);
   const dir = lookDir(player, _dir);
   const bone = cfg.aimBone || (cfg.aimHead ? 'head' : 'body');
-  let best = null, bestFov = cfg.aimFov;
+  const fovLimit = effectiveAimFov(cfg);
+  let best = null, bestFov = fovLimit, bestDist = Infinity;
 
   for (const a of list) {
     bonePos(a, bone, _tgt);
     const dist = distFlat(eye, _tgt);
     if (dist > cfg.aimDist) continue;
     if (cfg.aimVisibleOnly && !losClear(world, eye.x, eye.y, eye.z, _tgt.x, _tgt.y, _tgt.z)) continue;
-    if (cfg.aimPredict) predictPos(a, bone, dist, _tgt);
+    if (cfg.aimPredict) predictPos(a, bone, dist, _tgt, player);
     const toX = _tgt.x - eye.x, toY = _tgt.y - eye.y, toZ = _tgt.z - eye.z;
     const fov = fovDeg(dir, toX, toY, toZ);
-    if (fov <= bestFov) { bestFov = fov; best = a; }
+    if (fov > fovLimit) continue;
+    if (fov < bestFov - 0.05 || (fov <= bestFov + 0.05 && dist < bestDist)) {
+      bestFov = fov;
+      bestDist = dist;
+      best = a;
+    }
   }
   return best;
 }
@@ -256,18 +294,37 @@ function applyAim(game, player, cfg, world, dt) {
   if (typeof player.yaw !== 'number' || typeof player.pitch !== 'number') return;
   const target = pickTarget(game, player, cfg, world);
   if (!target) return;
-  const eye = eyePos(player, _eye);
+  const eye = eyePosForAim(player, _eye);
   const bone = cfg.aimBone || (cfg.aimHead ? 'head' : 'body');
   bonePos(target, bone, _tgt);
   const dist = distFlat(eye, _tgt);
-  if (cfg.aimPredict) predictPos(target, bone, dist, _tgt);
+  if (cfg.aimPredict) predictPos(target, bone, dist, _tgt, player);
   const ang = aimAngles(eye.x, eye.y, eye.z, _tgt.x, _tgt.y, _tgt.z);
   const dyaw = shortestAngle(player.yaw, ang.yaw);
   const dpitch = ang.pitch - player.pitch;
-  const smooth = Math.max(1, cfg.aimSmooth);
-  const k = smooth <= 1.05 ? 1 : 1 - Math.exp(-dt * (18 / smooth));
+  const k = aimStrength(cfg, dt);
   player.yaw += dyaw * k;
   player.pitch = clamp(player.pitch + dpitch * k, -1.55, 1.55);
+  while (player.yaw > Math.PI) player.yaw -= Math.PI * 2;
+  while (player.yaw < -Math.PI) player.yaw += Math.PI * 2;
+}
+
+function wrapHandleInput(player) {
+  if (wrappedInput.has(player)) return;
+  wrappedInput.set(player, true);
+  const orig = player.handleInput.bind(player);
+  player.handleInput = function(input, dt) {
+    const cfg = aimCtx.cfg;
+    const lock = cfg && cfg.aimbot && !aimCtx.menuOpen && aimKeyHeld(cfg, player, input);
+    if (lock) {
+      input.dx = 0;
+      input.dy = 0;
+    }
+    orig(input, dt);
+    if (lock) {
+      applyAim(aimCtx.game, player, cfg, aimCtx.game && aimCtx.game.world, dt);
+    }
+  };
 }
 
 function applyTrigger(game, player, cfg, camera, world, W, H, now) {
@@ -420,6 +477,7 @@ export function applyFeatures(dt, ctx) {
     wrapGod(player);
     wrapRecoil(player);
     wrapPhysics(player);
+    wrapHandleInput(player);
 
     if (cfg.godmode && isAlive(player)) {
       setHp(player, getMaxHp(player));
@@ -441,11 +499,8 @@ export function applyFeatures(dt, ctx) {
     applyCustomAssets(game, player, cfg);
 
     if (menuOpen) suppressFire(player, input);
-    else {
-      if (cfg.aimbot && aimKeyHeld(cfg, player, input)) applyAim(game, player, cfg, world, dt);
-      if (cfg.triggerbot && camera && canvas) {
-        applyTrigger(game, player, cfg, camera, world, canvas.clientWidth, canvas.clientHeight, now);
-      }
+    else if (cfg.triggerbot && camera && canvas) {
+      applyTrigger(game, player, cfg, camera, world, canvas.clientWidth, canvas.clientHeight, now);
     }
   }
 
@@ -476,19 +531,21 @@ function drawVisuals(canvas, cfg, game, player, camera, menuOpen) {
   ctx.clearRect(0, 0, W, H);
 
   if (cfg.fovCircle && !menuOpen) {
-    const radius = fovToPixels(cfg.aimFov, camera, W, H);
+    const radius = cfg.aimFov <= 0
+      ? Math.min(W, H) * 0.47
+      : fovToPixels(cfg.aimFov, camera, W, H);
     if (radius > 0.5) {
       const cx = W * 0.5, cy = H * 0.5;
       ctx.beginPath();
       ctx.arc(cx, cy, radius, 0, Math.PI * 2);
-      ctx.strokeStyle = 'rgba(255, 204, 0, 0.65)';
-      ctx.lineWidth = 2;
-      ctx.setLineDash([7, 5]);
+      ctx.strokeStyle = cfg.aimFov <= 0 ? 'rgba(255, 204, 0, 0.35)' : 'rgba(255, 204, 0, 0.7)';
+      ctx.lineWidth = cfg.aimFov <= 0 ? 1.5 : 2;
+      ctx.setLineDash(cfg.aimFov <= 0 ? [10, 8] : [7, 5]);
       ctx.stroke();
       ctx.setLineDash([]);
       ctx.beginPath();
       ctx.arc(cx, cy, 2.5, 0, Math.PI * 2);
-      ctx.fillStyle = 'rgba(255, 204, 0, 0.85)';
+      ctx.fillStyle = 'rgba(255, 204, 0, 0.9)';
       ctx.fill();
     }
   }

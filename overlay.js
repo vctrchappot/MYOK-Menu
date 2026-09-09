@@ -197,6 +197,12 @@ export function createOverlay(cfg, hooks) {
     if (!state.open || e.button !== 0) return;
     if (state.dragPanel) return;
     if (!document.pointerLockElement) {
+      // Toggles/Slider/Select nutzen natives Label-Verhalten — kein softwareClick (sonst Doppel-Toggle)
+      if (e.target.closest && (
+        e.target.closest('.fs-toggle-row') ||
+        e.target.closest('.fs-slider') ||
+        e.target.closest('select')
+      )) return;
       const el = e.target.closest && e.target.closest('#fs-panel');
       if (el) softwareClick(e.target, state, cfg, onField, setTab, hooks);
       return;
@@ -292,7 +298,7 @@ function fillAim(el, cfg, onField) {
   aim.append(
     check('aimbot', 'Aimbot', cfg, onField),
     slider('aimFov', 'FOV', cfg, onField, 0, 100, 1),
-    slider('aimSmooth', 'Smooth', cfg, onField, 1, 12, 0.1),
+    slider('aimSmooth', 'Smooth', cfg, onField, 0, 20, 0.5),
     slider('aimDist', 'Max-Distanz', cfg, onField, 20, 250, 5),
     select('aimBone', 'Knochen', cfg, onField, [['head', 'Kopf'], ['body', 'Körper']]),
     check('aimPredict', 'Prediction', cfg, onField),

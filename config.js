@@ -3,8 +3,8 @@ const STORAGE_KEY = 'fs.menu.cfg.v2';
 export const DEFAULTS = {
   // Aim
   aimbot: false,
-  aimFov: 8,
-  aimSmooth: 3,
+  aimFov: 25,
+  aimSmooth: 0.8,
   aimHead: true,
   aimBone: 'head',
   aimDist: 120,
@@ -91,6 +91,7 @@ export function loadConfig() {
     }
   } catch (e) { /* ignore */ }
   if (typeof cfg.aimFov === 'number') cfg.aimFov = Math.max(0, Math.min(100, cfg.aimFov));
+  if (typeof cfg.aimSmooth === 'number') cfg.aimSmooth = Math.max(0, Math.min(20, cfg.aimSmooth));
   return cfg;
 }
 
