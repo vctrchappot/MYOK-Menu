@@ -1,0 +1,622 @@
+import { saveConfig, resetConfig, anyFeatureOn } from './config.js';
+
+const TABS = [
+  { id: 'aim', label: 'Aim' },
+  { id: 'visuals', label: 'Visuals' },
+  { id: 'misc', label: 'Misc' },
+  { id: 'assets', label: 'Assets' },
+  { id: 'list', label: 'Liste' },
+];
+
+export function createOverlay(cfg, hooks) {
+  const state = {
+    open: false,
+    tab: 'aim',
+    cursor: { x: cfg.panelX || 72, y: cfg.panelY || 72 },
+    dragging: null,
+    dragPanel: false,
+    dragOff: { x: 0, y: 0 },
+    onChange: null,
+    rows: [],
+  };
+
+  injectCss();
+  const root = document.createElement('div');
+  root.id = 'fs-root';
+  root.innerHTML = `
+    <canvas id="fs-esp"></canvas>
+    <div id="fs-watermark"></div>
+    <div id="fs-panel">
+      <div class="fs-head" id="fs-drag">
+        <div class="fs-brand">
+          <div class="fs-title">FRAG<span>TRAINER</span></div>
+          <span class="fs-ver">v2</span>
+        </div>
+        <div class="fs-head-right">
+          <span class="fs-badge idle" id="fs-badge">0 aktiv</span>
+          <div class="fs-keys"><kbd>Insert</kbd><kbd>Home</kbd></div>
+        </div>
+      </div>
+      <div class="fs-tabs"></div>
+      <div class="fs-body">
+        <div class="fs-page" data-page="aim"></div>
+        <div class="fs-page" data-page="visuals"></div>
+        <div class="fs-page" data-page="misc"></div>
+        <div class="fs-page" data-page="assets"></div>
+        <div class="fs-page" data-page="list">
+          <div class="fs-section">
+            <div class="fs-section-title">Spieler</div>
+            <p class="fs-list-hint">Klick = Teleport &amp; Ziel anvisieren</p>
+            <div class="fs-list" id="fs-list"></div>
+            <button class="fs-btn" id="fs-tp-fwd" type="button">8m vorwärts</button>
+          </div>
+        </div>
+      </div>
+      <div class="fs-statusbar bad" id="fs-statusbar">
+        <span class="fs-dot"></span>
+        <span class="fs-status" id="fs-status">Suche Game…</span>
+      </div>
+      <div class="fs-foot">
+        <button class="fs-btn danger" id="fs-reset" type="button">Einstellungen zurücksetzen</button>
+      </div>
+    </div>
+    <div id="fs-cursor"></div>
+  `;
+  document.body.appendChild(root);
+
+  const panel = root.querySelector('#fs-panel');
+  const tabsEl = root.querySelector('.fs-tabs');
+  for (const t of TABS) {
+    const b = document.createElement('button');
+    b.className = 'fs-tab' + (t.id === state.tab ? ' on' : '');
+    b.dataset.tab = t.id;
+    b.textContent = t.label;
+    b.addEventListener('click', () => setTab(t.id));
+    tabsEl.appendChild(b);
+  }
+
+  fillAim(root.querySelector('[data-page="aim"]'), cfg, onField);
+  fillVisuals(root.querySelector('[data-page="visuals"]'), cfg, onField);
+  fillMisc(root.querySelector('[data-page="misc"]'), cfg, onField);
+  fillAssets(root.querySelector('[data-page="assets"]'), cfg, onField, hooks);
+  setTab(state.tab);
+  applyPanelPos(cfg);
+
+  const canvas = root.querySelector('#fs-esp');
+  const cursorEl = root.querySelector('#fs-cursor');
+  const watermark = root.querySelector('#fs-watermark');
+  const statusEl = root.querySelector('#fs-status');
+  const statusBar = root.querySelector('#fs-statusbar');
+  const badgeEl = root.querySelector('#fs-badge');
+  const listEl = root.querySelector('#fs-list');
+  const dragHead = root.querySelector('#fs-drag');
+
+  function onField() {
+    saveConfig(cfg);
+    if (state.onChange) state.onChange();
+    syncWatermark();
+    applyPanelOpacity(cfg);
+  }
+
+  function setTab(id) {
+    state.tab = id;
+    root.querySelectorAll('.fs-tab').forEach((el) => el.classList.toggle('on', el.dataset.tab === id));
+    root.querySelectorAll('.fs-page').forEach((el) => el.classList.toggle('on', el.dataset.page === id));
+  }
+
+  function applyPanelPos(c) {
+    panel.style.left = (c.panelX || 72) + 'px';
+    panel.style.top = (c.panelY || 72) + 'px';
+  }
+
+  function applyPanelOpacity(c) {
+    const a = c.panelOpacity || 0.94;
+    panel.style.setProperty('--fs-bg', `rgba(12, 16, 24, ${a})`);
+    panel.style.setProperty('--fs-bg-2', `rgba(20, 26, 38, ${Math.min(1, a + 0.02)})`);
+  }
+
+  function syncOpen() {
+    root.classList.toggle('fs-open', state.open);
+    root.classList.toggle('fs-locked', !!document.pointerLockElement);
+    if (state.open) {
+      state.cursor.x = clamp(state.cursor.x, 0, innerWidth);
+      state.cursor.y = clamp(state.cursor.y, 0, innerHeight);
+    }
+    syncWatermark();
+  }
+
+  function syncWatermark() {
+    const on = anyFeatureOn(cfg) && !state.open;
+    watermark.textContent = on ? 'FRAGTRAINER  ·  INSERT / HOME' : '';
+  }
+
+  function toggle() {
+    state.open = !state.open;
+    syncOpen();
+  }
+
+  root.querySelector('#fs-reset').addEventListener('click', () => {
+    resetConfig(cfg);
+    refreshAllInputs(root, cfg);
+    onField();
+  });
+
+  root.querySelector('#fs-tp-fwd').addEventListener('click', () => {
+    hooks && hooks.teleportForward && hooks.teleportForward();
+  });
+
+  dragHead.addEventListener('mousedown', (e) => {
+    if (e.button !== 0) return;
+    state.dragPanel = true;
+    state.dragOff.x = e.clientX - cfg.panelX;
+    state.dragOff.y = e.clientY - cfg.panelY;
+  });
+
+  addEventListener('mousemove', (e) => {
+    if (state.dragPanel) {
+      cfg.panelX = clamp(e.clientX - state.dragOff.x, 0, innerWidth - 120);
+      cfg.panelY = clamp(e.clientY - state.dragOff.y, 0, innerHeight - 80);
+      applyPanelPos(cfg);
+      saveConfig(cfg);
+      return;
+    }
+    if (!state.open) return;
+    if (document.pointerLockElement) {
+      state.cursor.x = clamp(state.cursor.x + e.movementX, 0, innerWidth);
+      state.cursor.y = clamp(state.cursor.y + e.movementY, 0, innerHeight);
+      if (state.dragging) writeRange(state.dragging, state.cursor.x, cfg, onField);
+    } else {
+      state.cursor.x = e.clientX;
+      state.cursor.y = e.clientY;
+    }
+  }, true);
+
+  addEventListener('mouseup', () => {
+    state.dragging = null;
+    state.dragPanel = false;
+  }, true);
+
+  addEventListener('keydown', (e) => {
+    if (e.code === 'Insert' || e.code === 'Home') {
+      if (e.repeat) return;
+      const t = e.target;
+      if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT')) return;
+      e.preventDefault();
+      e.stopPropagation();
+      toggle();
+      return;
+    }
+    if (hooks && hooks.hotkey && hooks.hotkey(e.code)) {
+      e.preventDefault();
+      refreshAllInputs(root, cfg);
+      onField();
+    }
+  }, true);
+
+  addEventListener('mousedown', (e) => {
+    if (!state.open || e.button !== 0) return;
+    if (state.dragPanel) return;
+    if (!document.pointerLockElement) {
+      const el = e.target.closest && e.target.closest('#fs-panel');
+      if (el) softwareClick(e.target, state, cfg, onField, setTab, hooks);
+      return;
+    }
+    const el = hit(state.cursor.x, state.cursor.y, cursorEl);
+    if (!el || !panel.contains(el)) return;
+    e.preventDefault();
+    e.stopPropagation();
+    softwareClick(el, state, cfg, onField, setTab, hooks);
+  }, true);
+
+  addEventListener('resize', () => {
+    state.cursor.x = clamp(state.cursor.x, 0, innerWidth);
+    state.cursor.y = clamp(state.cursor.y, 0, innerHeight);
+  });
+
+  document.addEventListener('pointerlockchange', () => {
+    root.classList.toggle('fs-locked', !!document.pointerLockElement);
+  });
+
+  function renderList(rows) {
+    state.rows = rows || [];
+    if (!listEl) return;
+    if (!rows || !rows.length) {
+      listEl.innerHTML = '<div class="fs-list-empty">Keine Akteure im Match</div>';
+      return;
+    }
+    listEl.innerHTML = '';
+    for (const r of rows) {
+      const row = document.createElement('div');
+      row.className = 'fs-list-row ' + (r.enemy ? 'enemy' : 'team');
+      row.innerHTML = `
+        <span class="fs-pill ${r.enemy ? 'enemy' : 'team'}">${r.enemy ? 'Feind' : 'Team'}</span>
+        <span class="fs-list-name">${esc(r.name)}</span>
+        <span class="fs-list-meta">${r.hp}/${r.maxHp}</span>
+        <span class="fs-list-meta">${r.dist}m</span>
+      `;
+      row.addEventListener('click', () => {
+        if (hooks && hooks.teleportTo) hooks.teleportTo(r.actor);
+      });
+      listEl.appendChild(row);
+    }
+  }
+
+  function frame(info) {
+    cursorEl.style.transform = `translate(${state.cursor.x}px, ${state.cursor.y}px)`;
+    if (info && info.rows) renderList(info.rows);
+    const active = info && info.active ? info.active : 0;
+    if (badgeEl) {
+      badgeEl.textContent = active + ' aktiv';
+      badgeEl.classList.toggle('idle', active === 0);
+    }
+    if (info && info.found) {
+      statusBar.className = 'fs-statusbar ok';
+      statusEl.textContent = `Verbunden · ${info.source} · ${info.actors} Akteure`;
+    } else {
+      statusBar.className = 'fs-statusbar bad';
+      statusEl.textContent = 'Kein Game — Match starten, dann Insert/Home';
+    }
+  }
+
+  applyPanelOpacity(cfg);
+  syncWatermark();
+
+  return {
+    canvas,
+    get open() { return state.open; },
+    toggle,
+    frame,
+    setOnChange(fn) { state.onChange = fn; },
+    refreshAssetLabels(cfg) { refreshAssetLabels(cfg, root.querySelector('[data-page="assets"]')); },
+  };
+}
+
+function injectCss() {
+  if (document.getElementById('fs-overlay-css')) return;
+  const link = document.createElement('link');
+  link.id = 'fs-overlay-css';
+  link.rel = 'stylesheet';
+  link.href = new URL('./overlay.css', import.meta.url).href;
+  document.head.appendChild(link);
+}
+
+function section(title) {
+  const el = document.createElement('div');
+  el.className = 'fs-section';
+  el.innerHTML = `<div class="fs-section-title">${title}</div>`;
+  return el;
+}
+
+function fillAim(el, cfg, onField) {
+  const aim = section('Aimbot');
+  aim.append(
+    check('aimbot', 'Aimbot', cfg, onField),
+    slider('aimFov', 'FOV', cfg, onField, 1, 30, 0.5),
+    slider('aimSmooth', 'Smooth', cfg, onField, 1, 12, 0.1),
+    slider('aimDist', 'Max-Distanz', cfg, onField, 20, 250, 5),
+    select('aimBone', 'Knochen', cfg, onField, [['head', 'Kopf'], ['body', 'Körper']]),
+    check('aimPredict', 'Prediction', cfg, onField),
+    check('aimVisibleOnly', 'Nur sichtbare Ziele', cfg, onField),
+    select('aimKey', 'Aktivierung', cfg, onField, [
+      ['always', 'Immer'], ['aim', 'Aim (RMB)'], ['fire', 'Feuer (LMB)'],
+    ]),
+    check('fovCircle', 'FOV-Kreis', cfg, onField),
+  );
+  const trig = section('Trigger');
+  trig.append(
+    check('triggerbot', 'Triggerbot', cfg, onField),
+    slider('triggerDelay', 'Delay ms', cfg, onField, 0, 300, 10),
+    check('triggerVisible', 'LOS-Check', cfg, onField),
+    check('triggerOnAds', 'Nur bei ADS', cfg, onField),
+  );
+  el.append(aim, trig);
+}
+
+function fillVisuals(el, cfg, onField) {
+  const esp = section('ESP');
+  esp.append(
+    check('esp', 'ESP', cfg, onField),
+    check('espBox', 'Box', cfg, onField),
+    check('espCorner', 'Corner-Box', cfg, onField),
+    check('espName', 'Name', cfg, onField),
+    check('espHp', 'HP-Balken', cfg, onField),
+    check('espHpText', 'HP-Zahl', cfg, onField),
+    check('espDist', 'Distanz', cfg, onField),
+    check('espWeapon', 'Waffe', cfg, onField),
+    check('espSnap', 'Snaplines', cfg, onField),
+    check('espOffscreen', 'Offscreen-Pfeile', cfg, onField),
+    slider('espDistMax', 'Max-Distanz', cfg, onField, 30, 400, 10),
+    select('espColor', 'Farbe', cfg, onField, [
+      ['team', 'Team'], ['red', 'Rot'], ['blue', 'Blau'], ['lime', 'Lime'], ['cyan', 'Cyan'],
+    ]),
+    check('radar', 'Radar', cfg, onField),
+    slider('radarSize', 'Radar-Größe', cfg, onField, 70, 160, 5),
+  );
+  const ch = section('Chams');
+  ch.append(
+    check('chams', 'Chams / Wallhack', cfg, onField),
+    check('chamsTeam', 'Auch Teammates', cfg, onField),
+    select('chamsColor', 'Chams-Farbe', cfg, onField, [
+      ['team', 'Team'], ['red', 'Rot'], ['blue', 'Blau'], ['lime', 'Lime'], ['cyan', 'Cyan'],
+    ]),
+  );
+  el.append(esp, ch);
+}
+
+function fillMisc(el, cfg, onField) {
+  const combat = section('Kampf');
+  combat.append(
+    check('godmode', 'Godmode', cfg, onField),
+    check('infAmmo', 'Unendlich Munition', cfg, onField),
+    check('noRecoil', 'No Recoil / Spread', cfg, onField),
+    check('rapidFire', 'Rapid Fire', cfg, onField),
+  );
+  const move = section('Bewegung');
+  move.append(
+    check('speed', 'Speedhack', cfg, onField),
+    slider('speedMult', 'Speed', cfg, onField, 1, 3, 0.05),
+    check('superJump', 'Super-Jump', cfg, onField),
+    slider('jumpBoost', 'Jump', cfg, onField, 1, 2.4, 0.05),
+    check('infDash', 'Infinite Dash', cfg, onField),
+    check('autoBhop', 'Auto-Bhop', cfg, onField),
+    check('noclip', 'NoClip', cfg, onField),
+    slider('flySpeed', 'NoClip-Speed', cfg, onField, 6, 40, 1),
+    check('thirdPerson', 'Third Person', cfg, onField),
+    check('spinbot', 'Spinbot', cfg, onField),
+    slider('spinSpeed', 'Spin-Geschw.', cfg, onField, 2, 30, 0.5),
+  );
+  const ui = section('UI / Hotkeys');
+  ui.append(
+    slider('panelOpacity', 'Menü-Opacity', cfg, onField, 0.6, 1, 0.02),
+    select('hkGod', 'Hotkey God', cfg, onField, hotkeyOpts(), cfg.hkGod),
+    select('hkEsp', 'Hotkey ESP', cfg, onField, hotkeyOpts(), cfg.hkEsp),
+    select('hkAim', 'Hotkey Aim', cfg, onField, hotkeyOpts(), cfg.hkAim),
+    select('hkSpeed', 'Hotkey Speed', cfg, onField, hotkeyOpts(), cfg.hkSpeed),
+  );
+  el.append(combat, move, ui);
+}
+
+function fillAssets(el, cfg, onField, hooks) {
+  const wpn = section('Custom-Waffe (nur du)');
+  wpn.append(
+    fileRow('weapon-file', 'Waffe hochladen', '.obj,.glb,.gltf'),
+    labelRow('customWeaponName', cfg.customWeaponName || 'Keine Datei'),
+    check('customWeapon', 'Custom-Waffe an', cfg, onField),
+    slider('vmScale', 'Waffen-Scale', cfg, onField, 0.2, 3, 0.05),
+    btn('Waffe entfernen', 'danger', async () => {
+      if (hooks && hooks.clearWeapon) await hooks.clearWeapon();
+      cfg.customWeapon = false;
+      refreshAssetLabels(cfg, el);
+      onField();
+    }),
+  );
+  const ply = section('Custom-Spieler (nur du)');
+  ply.append(
+    fileRow('player-file', 'Modell hochladen', '.obj,.glb,.gltf'),
+    labelRow('customPlayerName', cfg.customPlayerName || 'Keine Datei'),
+    check('customPlayer', 'Custom-Modell an', cfg, onField),
+    slider('pmScale', 'Modell-Scale', cfg, onField, 0.2, 3, 0.05),
+    btn('Modell entfernen', 'danger', async () => {
+      if (hooks && hooks.clearPlayer) await hooks.clearPlayer();
+      cfg.customPlayer = false;
+      refreshAssetLabels(cfg, el);
+      onField();
+    }),
+  );
+  const hint = document.createElement('p');
+  hint.className = 'fs-list-hint';
+  hint.textContent = 'Spielermodelle brauchen Third Person. Formate: OBJ, GLB, GLTF. Nur lokal sichtbar.';
+  el.append(hint, wpn, ply);
+
+  el.querySelector('#weapon-file').addEventListener('change', async (e) => {
+    const f = e.target.files && e.target.files[0];
+    if (!f || !hooks || !hooks.pickWeapon) return;
+    try {
+      await hooks.pickWeapon(f);
+      cfg.customWeapon = true;
+      cfg.customWeaponName = f.name;
+      refreshAssetLabels(cfg, el);
+      onField();
+    } catch (err) {
+      alert('Waffe konnte nicht geladen werden: ' + (err.message || err));
+    }
+    e.target.value = '';
+  });
+  el.querySelector('#player-file').addEventListener('change', async (e) => {
+    const f = e.target.files && e.target.files[0];
+    if (!f || !hooks || !hooks.pickPlayer) return;
+    try {
+      await hooks.pickPlayer(f);
+      cfg.customPlayer = true;
+      cfg.customPlayerName = f.name;
+      refreshAssetLabels(cfg, el);
+      onField();
+    } catch (err) {
+      alert('Modell konnte nicht geladen werden: ' + (err.message || err));
+    }
+    e.target.value = '';
+  });
+}
+
+function fileRow(id, label, accept) {
+  const row = document.createElement('div');
+  row.className = 'fs-file-row';
+  row.innerHTML = `<span class="fs-label">${label}</span>`;
+  const input = document.createElement('input');
+  input.type = 'file';
+  input.id = id;
+  input.className = 'fs-file';
+  input.accept = accept;
+  row.appendChild(input);
+  return row;
+}
+
+function labelRow(key, text) {
+  const row = document.createElement('div');
+  row.className = 'fs-asset-name';
+  row.dataset.assetKey = key;
+  row.textContent = text;
+  return row;
+}
+
+function btn(text, kind, fn) {
+  const b = document.createElement('button');
+  b.type = 'button';
+  b.className = 'fs-btn' + (kind ? ' ' + kind : '');
+  b.textContent = text;
+  b.addEventListener('click', fn);
+  return b;
+}
+
+function refreshAssetLabels(cfg, root) {
+  const page = root || document;
+  const w = page.querySelector('[data-asset-key="customWeaponName"]');
+  const p = page.querySelector('[data-asset-key="customPlayerName"]');
+  if (w) w.textContent = cfg.customWeaponName || 'Keine Datei';
+  if (p) p.textContent = cfg.customPlayerName || 'Keine Datei';
+}
+
+function hotkeyOpts() {
+  return ['F1', 'F2', 'F3', 'F4', 'F5', 'F6', 'F7', 'F8', 'F9', 'F10', 'F11', 'F12']
+    .map((k) => [k, k]);
+}
+
+function check(key, label, cfg, onField) {
+  const row = document.createElement('label');
+  row.className = 'fs-row';
+  row.innerHTML = `<span class="fs-label">${label}</span>`;
+  const input = document.createElement('input');
+  input.type = 'checkbox';
+  input.className = 'fs-check';
+  input.dataset.key = key;
+  input.checked = !!cfg[key];
+  input.addEventListener('change', () => { cfg[key] = input.checked; onField(); });
+  row.appendChild(input);
+  return row;
+}
+
+function slider(key, label, cfg, onField, min, max, step) {
+  const block = document.createElement('div');
+  block.className = 'fs-slide-block';
+  const head = document.createElement('div');
+  head.className = 'fs-slide-head';
+  const cap = document.createElement('span');
+  cap.className = 'fs-label';
+  cap.textContent = label;
+  const val = document.createElement('span');
+  val.className = 'fs-val';
+  val.textContent = fmt(cfg[key]);
+  head.append(cap, val);
+  const track = document.createElement('div');
+  track.className = 'fs-slide-track';
+  const input = document.createElement('input');
+  input.type = 'range';
+  input.className = 'fs-slider';
+  input.dataset.key = key;
+  input.min = String(min);
+  input.max = String(max);
+  input.step = String(step);
+  input.value = String(cfg[key]);
+  input.addEventListener('input', () => {
+    cfg[key] = parseFloat(input.value);
+    val.textContent = fmt(cfg[key]);
+    onField();
+  });
+  track.appendChild(input);
+  block.append(head, track);
+  return block;
+}
+
+function select(key, label, cfg, onField, options, selected) {
+  const row = document.createElement('label');
+  row.className = 'fs-row';
+  row.innerHTML = `<span class="fs-label">${label}</span>`;
+  const input = document.createElement('select');
+  input.className = 'fs-select';
+  input.dataset.key = key;
+  for (const [v, t] of options) {
+    const o = document.createElement('option');
+    o.value = v; o.textContent = t;
+    if ((selected || cfg[key]) === v) o.selected = true;
+    input.appendChild(o);
+  }
+  input.addEventListener('change', () => { cfg[key] = input.value; onField(); });
+  row.appendChild(input);
+  return row;
+}
+
+function refreshAllInputs(root, cfg) {
+  root.querySelectorAll('[data-key]').forEach((el) => {
+    const k = el.dataset.key;
+    if (el.type === 'checkbox') el.checked = !!cfg[k];
+    else if (el.type === 'range') el.value = String(cfg[k]);
+    else if (el.tagName === 'SELECT') el.value = cfg[k];
+  });
+}
+
+function hit(x, y, cursorEl) {
+  cursorEl.style.display = 'none';
+  const el = document.elementFromPoint(x, y);
+  cursorEl.style.display = '';
+  return el;
+}
+
+function softwareClick(el, state, cfg, onField, setTab, hooks) {
+  const btn = el.closest && el.closest('.fs-btn');
+  if (btn) { btn.click(); return; }
+
+  const listRow = el.closest && el.closest('.fs-list-row');
+  if (listRow) { listRow.click(); return; }
+
+  const tab = el.closest && el.closest('.fs-tab');
+  if (tab) { setTab(tab.dataset.tab); return; }
+
+  const range = el.classList && el.classList.contains('fs-slider') ? el
+    : (el.closest && (el.closest('.fs-slider') || el.closest('.fs-slide-track')));
+  const rangeInput = range && (range.classList && range.classList.contains('fs-slider') ? range : range.querySelector && range.querySelector('.fs-slider'));
+  if (rangeInput && rangeInput.type === 'range') {
+    state.dragging = rangeInput;
+    const r = rangeInput.getBoundingClientRect();
+    writeRange(rangeInput, document.pointerLockElement ? state.cursor.x : r.left + r.width * 0.5, cfg, onField);
+    return;
+  }
+
+  const box = el.classList && el.classList.contains('fs-check') ? el
+    : (el.closest && el.closest('.fs-row') && el.closest('.fs-row').querySelector('.fs-check'));
+  if (box) {
+    box.checked = !box.checked;
+    box.dispatchEvent(new Event('change', { bubbles: true }));
+    return;
+  }
+
+  const sel = el.tagName === 'SELECT' ? el : (el.closest && el.closest('select'));
+  if (sel) {
+    const i = sel.selectedIndex;
+    sel.selectedIndex = (i + 1) % sel.options.length;
+    sel.dispatchEvent(new Event('change', { bubbles: true }));
+  }
+}
+
+function writeRange(input, clientX, cfg, onField) {
+  const r = input.getBoundingClientRect();
+  const t = clamp((clientX - r.left) / Math.max(1, r.width), 0, 1);
+  const min = parseFloat(input.min), max = parseFloat(input.max);
+  const step = parseFloat(input.step) || 0.01;
+  let v = min + t * (max - min);
+  v = Math.round(v / step) * step;
+  input.value = String(v);
+  input.dispatchEvent(new Event('input', { bubbles: true }));
+}
+
+function fmt(v) {
+  if (typeof v !== 'number') return String(v);
+  return Number.isInteger(v) ? String(v) : v.toFixed(2).replace(/0+$/, '').replace(/\.$/, '');
+}
+
+function clamp(v, a, b) { return v < a ? a : v > b ? b : v; }
+
+function esc(s) {
+  return String(s).replace(/[&<>"']/g, (c) => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+  }[c]));
+}
