@@ -50,6 +50,9 @@ export const DEFAULTS = {
   ghostshot: false,
   infDash: false,
   autoBhop: false,
+  automove: false,
+  automoveStrength: 0.85,
+  automoveRange: 14,
   thirdPerson: false,
   noclip: false,
   fly: false,
@@ -96,7 +99,7 @@ const CUSTOM_PRESET_KEY = 'fs.menu.preset.custom';
 const FEATURE_KEYS = [
   'aimbot', 'aimlock', 'triggerbot', 'esp', 'chams', 'radar', 'fovCircle',
   'godmode', 'infAmmo', 'noRecoil', 'rapidFire', 'ghostshot', 'infDash', 'autoBhop',
-  'thirdPerson', 'noclip', 'fly', 'spinbot', 'speed', 'superJump',
+  'thirdPerson', 'noclip', 'fly', 'spinbot', 'automove', 'speed', 'superJump',
   'customWeapon', 'customPlayer',
 ];
 
@@ -144,7 +147,7 @@ export const PRESETS = {
     fovCircle: true, fovCircleLock: true,
     esp: true, espBox: true, espCorner: true, espName: true, espHp: true,
     espDist: true, radar: true, chams: false,
-    godmode: true, infAmmo: true, noRecoil: true, infDash: true, autoBhop: true,
+    godmode: true, infAmmo: true, noRecoil: true, infDash: true, autoBhop: true, automove: true,
   },
   trigger: {
     label: 'Trigger',

@@ -13,6 +13,8 @@ const wrappedRecoil = new WeakSet();
 const wrappedPhys = new WeakSet();
 const wrappedInput = new WeakSet();
 const wrappedRapid = new WeakSet();
+const wrappedAutomove = new WeakSet();
+const automoveState = new WeakMap();
 const wrappedGhost = new WeakSet();
 const wrappedSpinGame = new WeakSet();
 let spinAngle = 0;
@@ -179,6 +181,214 @@ function wrapRapidFire(player) {
       }
     }
     origWeapons(dt);
+  };
+}
+
+function getAutomoveState(player) {
+  let st = automoveState.get(player);
+  if (!st) {
+    st = {
+      path: null, pathIdx: 0, repathTimer: 0,
+      stuckTimer: 0, unstuckTimer: 0, clearTimer: 0,
+      lastX: 0, lastZ: 0,
+    };
+    automoveState.set(player, st);
+  }
+  return st;
+}
+
+function worldFromIntent(player, fwd, side) {
+  const sin = Math.sin(player.yaw), cos = Math.cos(player.yaw);
+  const dx = -sin * fwd + cos * side;
+  const dz = -cos * fwd - sin * side;
+  const len = Math.hypot(dx, dz);
+  if (len < 0.001) return null;
+  return { x: dx / len, z: dz / len };
+}
+
+function intentFromWorld(player, dirX, dirZ) {
+  const sin = Math.sin(player.yaw), cos = Math.cos(player.yaw);
+  return {
+    fwd: clamp(-(dirX * sin + dirZ * cos), -1, 1),
+    side: clamp(dirX * cos - dirZ * sin, -1, 1),
+  };
+}
+
+function rayDist(world, px, y, pz, dx, dz, maxDist) {
+  if (!world || typeof world.raycast !== 'function') return maxDist;
+  const len = Math.hypot(dx, dz) || 1;
+  const hit = world.raycast(px, y, pz, dx / len, 0, dz / len, maxDist);
+  return hit ? hit.t : maxDist;
+}
+
+function pathAheadClear(world, px, y, pz, dirX, dirZ, dist) {
+  return rayDist(world, px, y, pz, dirX, dirZ, dist) >= dist - 0.35;
+}
+
+function needsMoveAssist(world, px, y, pz, dirX, dirZ) {
+  if (!pathAheadClear(world, px, y, pz, dirX, dirZ, 2.5)) return true;
+  const perpX = -dirZ, perpZ = dirX;
+  if (rayDist(world, px, y, pz, perpX, perpZ, 1.3) < 0.6) return true;
+  if (rayDist(world, px, y, pz, -perpX, -perpZ, 1.3) < 0.6) return true;
+  return false;
+}
+
+function pickClearestDir(world, px, y, pz, prefer, yaw) {
+  let best = null, bestScore = -1;
+  for (let deg = -75; deg <= 75; deg += 15) {
+    const a = yaw + deg * Math.PI / 180;
+    const dx = -Math.sin(a), dz = -Math.cos(a);
+    const clear = rayDist(world, px, y, pz, dx, dz, 7);
+    const bias = prefer ? Math.max(0, dx * prefer.x + dz * prefer.z) : 1;
+    const score = clear * (0.5 + 0.5 * bias);
+    if (score > bestScore) { bestScore = score; best = { x: dx, z: dz }; }
+  }
+  return bestScore > 1.2 ? best : null;
+}
+
+function followAutomovePath(st, player, it) {
+  if (!st.path || st.pathIdx >= st.path.length) return null;
+  const px = player.pos.x, py = player.pos.y, pz = player.pos.z;
+  let wp = st.path[st.pathIdx];
+  let dx = wp.x - px, dz = wp.z - pz;
+  let dist = Math.hypot(dx, dz);
+  const dy = wp.y - py;
+
+  while (dist < 1.4 && Math.abs(dy) < 2.6 && st.pathIdx < st.path.length - 1) {
+    st.pathIdx++;
+    wp = st.path[st.pathIdx];
+    dx = wp.x - px;
+    dz = wp.z - pz;
+    dist = Math.hypot(dx, dz);
+  }
+  if (dist < 1.1 && st.pathIdx >= st.path.length - 1) {
+    st.path = null;
+    return null;
+  }
+  if (dist < 0.001) return null;
+  if (dy > 0.85 && dist < 3.5 && player.grounded) it.jumpPressed = true;
+  return { x: dx / dist, z: dz / dist };
+}
+
+function planAutomovePath(player, world, cfg, want) {
+  const px = player.pos.x, py = player.pos.y, pz = player.pos.z;
+  const range = cfg.automoveRange || 14;
+  let gx = px + want.x * range;
+  let gz = pz + want.z * range;
+  const half = ((world.map && world.map.size) || 120) / 2 - 3;
+  gx = clamp(gx, -half, half);
+  gz = clamp(gz, -half, half);
+  let gy = py;
+  if (typeof world.nearestNode === 'function') {
+    const node = world.nearestNode(gx, py, gz);
+    if (node) { gx = node.x; gy = node.y; gz = node.z; }
+  }
+  if (typeof world.findPath !== 'function') return null;
+  return world.findPath(px, py, pz, gx, gy, gz);
+}
+
+/** Sanfter Lauf-Assistent: Nav-Pfade nur bei Wände/Engstellen, sonst volle Spieler-Kontrolle. */
+function applyAutomove(player, world, cfg, dt) {
+  if (!player || !player.alive || !world || !world.nav || !player.intent) return;
+  if (cfg.noclip || cfg.fly) return;
+
+  const it = player.intent;
+  const userFwd = it.fwd, userSide = it.side;
+  if (Math.hypot(userFwd, userSide) < 0.12) return;
+  if (userFwd < -0.15 && Math.abs(userSide) < 0.35) return;
+
+  const want = worldFromIntent(player, userFwd, userSide);
+  if (!want) return;
+
+  const st = getAutomoveState(player);
+  const px = player.pos.x, py = player.pos.y, pz = player.pos.z;
+  const bodyY = py + (player.height || 2.2) * 0.45;
+  const assistNeeded = needsMoveAssist(world, px, bodyY, pz, want.x, want.z) || st.unstuckTimer > 0;
+
+  if (!assistNeeded) {
+    st.clearTimer += dt;
+    if (st.clearTimer > 0.2) {
+      st.path = null;
+      st.pathIdx = 0;
+      st.repathTimer = 0;
+    }
+    if (!st.path) {
+      st.stuckTimer = Math.max(0, st.stuckTimer - dt * 2);
+      st.lastX = px;
+      st.lastZ = pz;
+      return;
+    }
+  } else {
+    st.clearTimer = 0;
+  }
+
+  st.repathTimer -= dt;
+  if (st.repathTimer <= 0 || !st.path) {
+    st.repathTimer = 0.55;
+    const path = planAutomovePath(player, world, cfg, want);
+    if (path && path.length) {
+      st.path = path;
+      st.pathIdx = 0;
+    } else if (!assistNeeded) {
+      st.path = null;
+    }
+  }
+
+  let dirX = want.x, dirZ = want.z;
+  let strength = cfg.automoveStrength ?? 0.85;
+
+  if (st.unstuckTimer > 0) {
+    st.unstuckTimer -= dt;
+    const alt = pickClearestDir(world, px, bodyY, pz, want, player.yaw);
+    if (alt) { dirX = alt.x; dirZ = alt.z; strength = 0.65; }
+  } else {
+    const pathDir = followAutomovePath(st, player, it);
+    if (pathDir) {
+      dirX = pathDir.x;
+      dirZ = pathDir.z;
+      strength = Math.min(0.95, strength + 0.08);
+    } else if (assistNeeded) {
+      const alt = pickClearestDir(world, px, bodyY, pz, want, player.yaw);
+      if (alt) { dirX = alt.x; dirZ = alt.z; }
+      else return;
+    } else {
+      return;
+    }
+  }
+
+  const local = intentFromWorld(player, dirX, dirZ);
+  it.fwd = clamp(userFwd * (1 - strength) + local.fwd * strength, -1, 1);
+  it.side = clamp(userSide * (1 - strength) + local.side * strength, -1, 1);
+
+  const moved = Math.hypot(px - st.lastX, pz - st.lastZ);
+  if (Math.hypot(it.fwd, it.side) > 0.15 && moved < 0.035) {
+    st.stuckTimer += dt;
+  } else {
+    st.stuckTimer = Math.max(0, st.stuckTimer - dt * 2);
+  }
+  st.lastX = px;
+  st.lastZ = pz;
+
+  if (st.stuckTimer > 0.55) {
+    st.stuckTimer = 0;
+    st.unstuckTimer = 0.45;
+    st.path = null;
+    st.repathTimer = 0;
+    it.jumpPressed = true;
+  }
+}
+
+function wrapAutomove(player) {
+  if (!player || wrappedAutomove.has(player)) return;
+  if (typeof player.update !== 'function') return;
+  wrappedAutomove.add(player);
+  const orig = player.update.bind(player);
+  player.update = function(dt, world) {
+    const cfg = aimCtx.cfg;
+    if (wrapAutomove._on && cfg && cfg.automove && !aimCtx.menuOpen && !cfg.noclip && !cfg.fly) {
+      applyAutomove(this, world, cfg, dt);
+    }
+    return orig(dt, world);
   };
 }
 
@@ -698,6 +908,7 @@ export function applyFeatures(dt, ctx) {
   wrapGod._on = !!(cfg && cfg.godmode);
   wrapRecoil._on = !!(cfg && cfg.noRecoil);
   wrapRapidFire._on = !!(cfg && cfg.rapidFire);
+  wrapAutomove._on = !!(cfg && cfg.automove);
   flyCfg._on = !!(cfg && (cfg.noclip || cfg.fly));
   flyCfg._speed = cfg ? cfg.flySpeed : 18;
   ghostState.on = !!(cfg && cfg.ghostshot);
@@ -727,6 +938,7 @@ export function applyFeatures(dt, ctx) {
     wrapGod(player);
     wrapRecoil(player);
     wrapRapidFire(player);
+    wrapAutomove(player);
     wrapPhysics(player);
     wrapHandleInput(player);
 
