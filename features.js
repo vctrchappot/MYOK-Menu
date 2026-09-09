@@ -14,6 +14,7 @@ const wrappedPhys = new WeakSet();
 const wrappedInput = new WeakSet();
 const wrappedRapid = new WeakSet();
 const wrappedAutomove = new WeakSet();
+const wrappedRapidmove = new WeakSet();
 const automoveState = new WeakMap();
 const wrappedGhost = new WeakSet();
 const wrappedSpinGame = new WeakSet();
@@ -42,6 +43,9 @@ let triggerTarget = null;
 let tpQueue = null;
 let stickyTarget = null;
 let currentAimTarget = null;
+
+/** Bewegungsverlauf pro Gegner für stabilere Vorhaltung. */
+const predictTrack = new Map();
 
 const _eye = { x: 0, y: 0, z: 0 };
 const _dir = { x: 0, y: 0, z: 0 };
@@ -392,6 +396,94 @@ function wrapAutomove(player) {
   };
 }
 
+/** Schnellere Drehung, bessere Luft-/Bodenkontrolle — kein reiner Speedhack. */
+function applyRapidmovePhysics(player, cfg, dt) {
+  if (!player.alive || !player.intent || player.wallrun || player.dashT > 0) return;
+  const it = player.intent;
+  const sin = Math.sin(player.yaw), cos = Math.cos(player.yaw);
+  let wx = -sin * it.fwd + cos * it.side;
+  let wz = -cos * it.fwd - sin * it.side;
+  const wl = Math.hypot(wx, wz);
+  if (wl < 0.08) return;
+  wx /= wl;
+  wz /= wl;
+
+  const strength = cfg.rapidmoveStrength ?? 1.25;
+  const airMult = cfg.rapidmoveAir ?? 1.45;
+
+  if (!player.grounded && !player.sliding) {
+    const accel = 18 * airMult * strength * dt;
+    const cur = player.vel.x * wx + player.vel.z * wz;
+    const wish = 12 * strength;
+    const add = Math.min(Math.max(0, wish - cur), accel);
+    if (add > 0) {
+      player.vel.x += wx * add;
+      player.vel.z += wz * add;
+    }
+    const sp = Math.hypot(player.vel.x, player.vel.z);
+    if (sp > 1.5) {
+      const dot = (player.vel.x * wx + player.vel.z * wz) / sp;
+      if (dot > -0.15) {
+        const k = 12 * strength * Math.max(0, dot) * dt;
+        let nx = player.vel.x + wx * k * sp;
+        let nz = player.vel.z + wz * k * sp;
+        const nl = Math.hypot(nx, nz) || 1;
+        player.vel.x = nx / nl * sp;
+        player.vel.z = nz / nl * sp;
+      }
+    }
+    return;
+  }
+
+  if (player.sliding) return;
+  const nudge = 5.5 * strength * dt;
+  player.vel.x += wx * nudge;
+  player.vel.z += wz * nudge;
+  const base = 11.6 * (player.speedMult || 1);
+  const sprint = it.sprint && it.fwd > 0.2 ? 1.28 : 1;
+  const cap = base * sprint * 1.1 * strength;
+  const sp = Math.hypot(player.vel.x, player.vel.z);
+  if (sp > cap) {
+    player.vel.x = player.vel.x / sp * cap;
+    player.vel.z = player.vel.z / sp * cap;
+  }
+}
+
+function wrapRapidmove(player) {
+  if (!player || wrappedRapidmove.has(player)) return;
+  wrappedRapidmove.add(player);
+
+  if (typeof player.handleInput === 'function') {
+    const origInput = player.handleInput.bind(player);
+    player.handleInput = function(input, dt) {
+      const cfg = aimCtx.cfg;
+      if (wrapRapidmove._on && cfg && cfg.rapidmove && !aimCtx.menuOpen) {
+        const turn = cfg.rapidmoveTurn ?? 1.35;
+        input.dx *= turn;
+        input.dy *= turn;
+      }
+      return origInput(input, dt);
+    };
+  }
+
+  if (typeof player.updatePhysics === 'function') {
+    const origPhys = player.updatePhysics.bind(player);
+    player.updatePhysics = function(dt, world) {
+      const cfg = aimCtx.cfg;
+      const on = wrapRapidmove._on && cfg && cfg.rapidmove && !cfg.noclip && !cfg.fly;
+      if (on && this.alive) {
+        const bonus = 0.035 * (cfg.rapidmoveStrength ?? 1.25);
+        if (typeof this.coyote === 'number') this.coyote = Math.max(this.coyote, bonus);
+        if (this.intent && this.intent.jumpPressed && typeof this.jumpBuffer === 'number') {
+          this.jumpBuffer = Math.max(this.jumpBuffer, 0.055);
+        }
+      }
+      origPhys(dt, world);
+      if (on && !flyCfg._on) applyRapidmovePhysics(this, cfg, dt);
+    };
+  }
+}
+
 function applyNoclip(player, dt) {
   const it = player.intent || {};
   const dir = lookDir(player, _dir);
@@ -536,29 +628,112 @@ function eyeHeightOf(actor) {
   return getHeight(actor) * (actor.crouching ? 0.53 : 0.87);
 }
 
-function bulletLeadTime(player, dist) {
-  const w = player && player.weapon;
-  if (!w) return 0;
-  if (w.projectile && w.projectile.speed > 0) return clamp(dist / w.projectile.speed, 0, 0.45);
-  return clamp(dist / 9000, 0, 0.06);
+function aimAssistLag(cfg) {
+  const bot = cfg.aimSmooth ?? 0.8;
+  const lock = cfg.aimlockSmooth ?? 0.1;
+  const smooth = cfg.aimlock ? Math.min(bot, lock + 0.05) : bot;
+  return clamp(0.012 + smooth * 0.02, 0, 0.1);
 }
 
-function predictPos(actor, bone, dist, out, player) {
+function bulletLeadTime(player, dist, cfg) {
+  const w = player && player.weapon;
+  const mult = cfg.aimPredictLead ?? 1;
+  const lag = aimAssistLag(cfg);
+  if (!w) return lag * mult;
+  if (w.projectile && w.projectile.speed > 0) {
+    return clamp(dist / w.projectile.speed + lag * 0.45, 0, 0.55) * mult;
+  }
+  return clamp(0.026 + dist / 9500 + lag, 0.02, 0.11) * mult;
+}
+
+function trackActorMotion(actor, now) {
+  const p = getPos(actor);
+  if (!p || actor.id == null) return null;
+  let st = predictTrack.get(actor.id);
+  if (!st) {
+    st = {
+      px: p.x, py: p.y, pz: p.z, t: now,
+      svx: 0, svy: 0, svz: 0,
+      prevSvx: 0, prevSvz: 0, prevT: now,
+    };
+    if (actor.vel) {
+      st.svx = actor.vel.x;
+      st.svy = actor.vel.y;
+      st.svz = actor.vel.z;
+    }
+    predictTrack.set(actor.id, st);
+    return st;
+  }
+
+  const dt = clamp((now - st.t) / 1000, 0.001, 0.12);
+  st.t = now;
+  let vx = (p.x - st.px) / dt;
+  let vy = (p.y - st.py) / dt;
+  let vz = (p.z - st.pz) / dt;
+  if (actor.vel) {
+    vx = vx * 0.6 + actor.vel.x * 0.4;
+    vy = vy * 0.5 + actor.vel.y * 0.5;
+    vz = vz * 0.6 + actor.vel.z * 0.4;
+  }
+  st.px = p.x;
+  st.py = p.y;
+  st.pz = p.z;
+
+  const blend = 1 - Math.exp(-dt * 16);
+  st.svx += (vx - st.svx) * blend;
+  st.svy += (vy - st.svy) * blend;
+  st.svz += (vz - st.svz) * blend;
+  return st;
+}
+
+function prunePredictTrack(game) {
+  if (!game || predictTrack.size < 24) return;
+  const alive = new Set();
+  for (const a of actorList(game)) {
+    if (a && a.id != null) alive.add(a.id);
+  }
+  for (const id of predictTrack.keys()) {
+    if (!alive.has(id)) predictTrack.delete(id);
+  }
+}
+
+function predictPos(actor, bone, dist, out, player, cfg, now) {
   bonePos(actor, bone, out);
-  if (!actor.vel) return out;
-  const t = bulletLeadTime(player, dist);
-  out.x += actor.vel.x * t;
-  out.z += actor.vel.z * t;
-  // Vertikal gedämpft — Sprünge erzeugen sonst Himmel-Lock
-  out.y += actor.vel.y * t * 0.3;
+  if (!cfg.aimPredict) return out;
+
+  const st = trackActorMotion(actor, now);
+  if (!st) return out;
+
+  const t = bulletLeadTime(player, dist, cfg);
+  const dtPrev = clamp((now - st.prevT) / 1000, 0.008, 0.12);
+  const ax = clamp((st.svx - st.prevSvx) / dtPrev, -14, 14);
+  const az = clamp((st.svz - st.prevSvz) / dtPrev, -14, 14);
+  st.prevSvx = st.svx;
+  st.prevSvz = st.svz;
+  st.prevT = now;
+
+  out.x += st.svx * t + ax * t * t * 0.45;
+  out.z += st.svz * t + az * t * t * 0.45;
+
+  const horizSp = Math.hypot(st.svx, st.svz);
+  let yScale = actor.grounded ? 0.16 : 0.34;
+  if (!actor.grounded && st.svy > 1.5) yScale = 0.48;
+  if (horizSp > 14) yScale *= 0.85;
+  out.y += st.svy * t * yScale;
+
+  const w = player && player.weapon;
+  if (w && w.projectile && w.projectile.speed > 0 && w.projectile.gravity > 0) {
+    const tof = clamp(dist / w.projectile.speed, 0, 0.55);
+    out.y += 0.5 * w.projectile.gravity * tof * tof * 0.8;
+  }
   return out;
 }
 
-function buildAimPoint(target, bone, cfg, player, game, world, out) {
+function buildAimPoint(target, bone, cfg, player, game, world, out, now) {
   const eye = aimEye(player, game, _eye);
   if (!bonePos(target, bone, out) || !isFiniteVec(out) || !isFiniteVec(eye)) return null;
   const dist = distFlat(eye, out);
-  if (cfg.aimPredict) predictPos(target, bone, dist, out, player);
+  predictPos(target, bone, dist, out, player, cfg, now || performance.now());
   clampAimPointY(eye, out);
   if (!isFiniteVec(out)) return null;
   if (cfg.aimVisibleOnly && !losClear(world, eye.x, eye.y, eye.z, out.x, out.y, out.z)) return null;
@@ -909,6 +1084,7 @@ export function applyFeatures(dt, ctx) {
   wrapRecoil._on = !!(cfg && cfg.noRecoil);
   wrapRapidFire._on = !!(cfg && cfg.rapidFire);
   wrapAutomove._on = !!(cfg && cfg.automove);
+  wrapRapidmove._on = !!(cfg && cfg.rapidmove);
   flyCfg._on = !!(cfg && (cfg.noclip || cfg.fly));
   flyCfg._speed = cfg ? cfg.flySpeed : 18;
   ghostState.on = !!(cfg && cfg.ghostshot);
@@ -927,6 +1103,7 @@ export function applyFeatures(dt, ctx) {
 
   wrapGhostshot(game);
   wrapSpinGame(game);
+  prunePredictTrack(game);
 
   const player = getPlayer(game);
   const camera = getCamera(game);
@@ -941,6 +1118,7 @@ export function applyFeatures(dt, ctx) {
     wrapAutomove(player);
     wrapPhysics(player);
     wrapHandleInput(player);
+    wrapRapidmove(player);
 
     if (cfg.godmode && isAlive(player)) {
       setHp(player, getMaxHp(player));

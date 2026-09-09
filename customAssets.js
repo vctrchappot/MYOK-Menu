@@ -5,6 +5,8 @@ const STORE = 'models';
 const PRESET_WEAPON = 'preset_weapon';
 const PRESET_PLAYER = 'preset_player';
 const DEG = Math.PI / 180;
+const VM_SCALE = 0.53;
+const WEAPON_LOCAL_HEIGHT = 0.45 / VM_SCALE;
 
 let weaponGroup = null;
 let playerGroup = null;
@@ -14,6 +16,7 @@ let weaponHidden = [];
 let playerHidden = [];
 let statusMsg = '';
 let loadersPromise = null;
+let lastWeaponTransform = readWeaponTransform({});
 
 async function getLoaders() {
   if (!loadersPromise) {
@@ -139,16 +142,71 @@ async function deleteBlob(key) {
   db.close();
 }
 
+function hideDefaultWeaponMesh(mesh) {
+  if (!mesh || mesh.userData.fsVmMeshHidden) return;
+  mesh.userData.fsVmMeshHidden = true;
+  mesh.userData.fsOrigMats = [];
+  const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+  for (const m of mats) {
+    if (!m) continue;
+    mesh.userData.fsOrigMats.push({
+      mat: m,
+      transparent: m.transparent,
+      opacity: m.opacity,
+      depthWrite: m.depthWrite,
+    });
+    m.transparent = true;
+    m.opacity = 0;
+    m.depthWrite = false;
+  }
+}
+
+function restoreDefaultWeaponMesh(mesh) {
+  if (!mesh || !mesh.userData.fsVmMeshHidden) return;
+  for (const { mat, transparent, opacity, depthWrite } of mesh.userData.fsOrigMats || []) {
+    mat.transparent = transparent;
+    mat.opacity = opacity;
+    mat.depthWrite = depthWrite;
+  }
+  delete mesh.userData.fsVmMeshHidden;
+  delete mesh.userData.fsOrigMats;
+}
+
+function prepareWeaponModel(group, vm) {
+  const env = vm && vm.scene && vm.scene.environment;
+  group.traverse((obj) => {
+    if (!obj.isMesh) return;
+    obj.frustumCulled = false;
+    obj.renderOrder = 10;
+    const mats = Array.isArray(obj.material) ? obj.material : [obj.material];
+    for (const m of mats) {
+      if (!m) continue;
+      m.side = THREE.FrontSide;
+      m.depthTest = true;
+      m.depthWrite = true;
+      if (m.isMeshStandardMaterial && env && !m.envMap) {
+        m.envMap = env;
+        m.envMapIntensity = m.envMapIntensity || 0.55;
+      }
+    }
+  });
+}
+
 function hideVmParts(vm) {
-  weaponHidden.length = 0;
   if (!vm) return;
-  for (const part of [vm.mesh, vm.armR, vm.armL]) {
-    if (part && part.visible) { part.visible = false; weaponHidden.push(part); }
+  if (vm.mesh) hideDefaultWeaponMesh(vm.mesh);
+  for (const part of [vm.armR, vm.armL]) {
+    if (part && part.visible) {
+      part.visible = false;
+      weaponHidden.push({ kind: 'part', obj: part });
+    }
   }
 }
 
 function restoreVmParts() {
-  for (const p of weaponHidden) p.visible = true;
+  for (const entry of weaponHidden) {
+    if (entry.kind === 'part') entry.obj.visible = true;
+  }
   weaponHidden.length = 0;
 }
 
@@ -175,22 +233,27 @@ function wrapViewModel(vm) {
   const orig = vm.setWeapon.bind(vm);
   vm.setWeapon = function(...args) {
     orig(...args);
-    if (weaponHolder) hideVmParts(vm);
+    if (pendingWeapon && vm.mesh) {
+      attachWeapon(vm, pendingWeapon.group, lastWeaponTransform, false);
+    }
   };
 }
 
-function attachWeapon(vm, group, t) {
-  if (!vm || !vm.root) return;
+function attachWeapon(vm, group, t, doClear = true) {
+  if (!vm || !vm.mesh) return;
   wrapViewModel(vm);
-  clearWeapon();
+  if (doClear) clearWeapon();
+  if (weaponHolder && weaponHolder.parent) weaponHolder.parent.remove(weaponHolder);
   weaponGroup = group.clone(true);
-  normalizeGroup(weaponGroup, 0.45);
+  prepareWeaponModel(weaponGroup, vm);
+  normalizeGroup(weaponGroup, WEAPON_LOCAL_HEIGHT);
   weaponGroup.scale.multiplyScalar(t.scale || 1);
   weaponHolder = new THREE.Group();
   weaponHolder.userData.baseScale = t.scale;
   weaponHolder.add(weaponGroup);
   applyHolderTransform(weaponHolder, t);
-  vm.root.add(weaponHolder);
+  vm.mesh.add(weaponHolder);
+  lastWeaponTransform = { ...t };
   hideVmParts(vm);
 }
 
@@ -209,12 +272,15 @@ function attachPlayer(model, group, t) {
 }
 
 function updateWeaponTransform(cfg, vm) {
+  if (!vm || !vm.mesh) return;
   const t = readWeaponTransform(cfg);
-  if (!weaponHolder || weaponHolder.userData.baseScale !== t.scale) {
-    if (pendingWeapon && vm) attachWeapon(vm, pendingWeapon.group, t);
+  lastWeaponTransform = { ...t };
+  if (!weaponHolder || weaponHolder.parent !== vm.mesh || weaponHolder.userData.baseScale !== t.scale) {
+    if (pendingWeapon) attachWeapon(vm, pendingWeapon.group, t);
     return;
   }
   applyHolderTransform(weaponHolder, t);
+  hideVmParts(vm);
 }
 
 function allowModelClip(cfg) {
@@ -271,8 +337,10 @@ function updatePlayerTransform(cfg, model, game, player) {
   clampPlayerModelToWorld(game, player, cfg);
 }
 
-export function clearWeapon() {
+export function clearWeapon(vm) {
   restoreVmParts();
+  const mesh = vm && vm.mesh ? vm.mesh : (weaponHolder && weaponHolder.parent && weaponHolder.parent.isMesh ? weaponHolder.parent : null);
+  if (mesh) restoreDefaultWeaponMesh(mesh);
   if (weaponHolder && weaponHolder.parent) weaponHolder.parent.remove(weaponHolder);
   weaponHolder = null;
   weaponGroup = null;
@@ -305,12 +373,14 @@ export async function uploadPlayerModel(file) {
 
 export async function removeWeapon() {
   await deleteBlob('weapon');
+  pendingWeapon = null;
   clearWeapon();
   statusMsg = 'Waffe entfernt';
 }
 
 export async function removePlayerModel() {
   await deleteBlob('player');
+  pendingPlayer = null;
   clearPlayer();
   statusMsg = 'Modell entfernt';
 }
@@ -336,6 +406,27 @@ export async function loadPlayerFromStore() {
   return pendingPlayer;
 }
 
+/** Toggle/Init: nur aktive Slots laden, inaktive aus dem Speicher und der Szene entfernen. */
+export async function syncCustomAssetState(cfg) {
+  if (!cfg.customWeapon) {
+    pendingWeapon = null;
+    clearWeapon();
+  } else if (!pendingWeapon) {
+    const w = await loadWeaponFromStore();
+    if (w) cfg.customWeaponName = w.name;
+    else { cfg.customWeapon = false; cfg.customWeaponName = ''; }
+  }
+
+  if (!cfg.customPlayer) {
+    pendingPlayer = null;
+    clearPlayer();
+  } else if (!pendingPlayer) {
+    const p = await loadPlayerFromStore();
+    if (p) cfg.customPlayerName = p.name;
+    else { cfg.customPlayer = false; cfg.customPlayerName = ''; }
+  }
+}
+
 export function applyCustomAssets(game, player, cfg) {
   if (!game || !player) return;
 
@@ -344,16 +435,18 @@ export function applyCustomAssets(game, player, cfg) {
 
   if (cfg.customWeapon && pendingWeapon && vm) {
     updateWeaponTransform(cfg, vm);
-  } else if (!cfg.customWeapon) {
-    clearWeapon();
+  } else {
+    clearWeapon(vm);
+    if (!cfg.customWeapon) pendingWeapon = null;
   }
 
   if (cfg.customPlayer && pendingPlayer && model) {
     updatePlayerTransform(cfg, model, game, player);
     model.setVisible(true);
     if (model.tag && model.tag.sprite) model.tag.sprite.visible = false;
-  } else if (!cfg.customPlayer) {
+  } else {
     clearPlayer();
+    if (!cfg.customPlayer) pendingPlayer = null;
   }
 }
 
@@ -371,10 +464,20 @@ async function copyBlobEntry(fromKey, toKey) {
   return null;
 }
 
-/** Modelle + Metadaten für Custom-Preset sichern. */
-export async function snapshotModelsForPreset() {
-  const weapon = await copyBlobEntry('weapon', PRESET_WEAPON);
-  const player = await copyBlobEntry('player', PRESET_PLAYER);
+/** Modelle + Metadaten für Custom-Preset sichern (nur aktivierte Slots). */
+export async function snapshotModelsForPreset(cfg) {
+  let weapon = null;
+  let player = null;
+  if (cfg && cfg.customWeapon) {
+    weapon = await copyBlobEntry('weapon', PRESET_WEAPON);
+  } else {
+    await deleteBlob(PRESET_WEAPON);
+  }
+  if (cfg && cfg.customPlayer) {
+    player = await copyBlobEntry('player', PRESET_PLAYER);
+  } else {
+    await deleteBlob(PRESET_PLAYER);
+  }
   return {
     weapon: weapon ? { name: weapon.name } : null,
     player: player ? { name: player.name } : null,
@@ -438,20 +541,11 @@ export async function restoreModelsFromPreset(cfg) {
 
 export async function initCustomAssets(cfg) {
   try {
-    if (cfg.customWeapon) {
-      const w = await loadWeaponFromStore();
-      if (w) cfg.customWeaponName = w.name;
-    } else {
-      const w = await loadBlob('weapon');
-      if (w) cfg.customWeaponName = w.name;
-    }
-    if (cfg.customPlayer) {
-      const p = await loadPlayerFromStore();
-      if (p) cfg.customPlayerName = p.name;
-    } else {
-      const p = await loadBlob('player');
-      if (p) cfg.customPlayerName = p.name;
-    }
+    const w = await loadBlob('weapon');
+    if (w) cfg.customWeaponName = w.name;
+    const p = await loadBlob('player');
+    if (p) cfg.customPlayerName = p.name;
+    await syncCustomAssetState(cfg);
   } catch (e) {
     statusMsg = 'Asset-Laden fehlgeschlagen';
   }

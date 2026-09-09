@@ -447,6 +447,7 @@ function fillAim(el, cfg, onField) {
       ['health', 'Niedrigste HP'],
     ]), aimOn),
     markCond(check('aimPredict', 'Bewegungs-Prediction', cfg, onField), aimOn),
+    markCond(slider('aimPredictLead', 'Vorhaltung', cfg, onField, 0.6, 1.5, 0.05), { all: 'aimPredict', any: 'aimbot,aimlock' }),
     markCond(check('aimVisibleOnly', 'Nur sichtbare Ziele (LOS)', cfg, onField), aimOn),
     markCond(check('fovCircle', 'FOV-Kreis anzeigen', cfg, onField), anyAim),
     markCond(check('fovCircleLock', 'Lock-Linie zum Ziel', cfg, onField), { all: 'fovCircle', any: 'aimbot,aimlock' }),
@@ -537,6 +538,10 @@ function fillMisc(el, cfg, onField) {
     check('automove', 'Automove (Pfad-Assist)', cfg, onField),
     markCond(slider('automoveStrength', 'Assist-Stärke', cfg, onField, 0.55, 0.95, 0.05), { any: 'automove' }),
     markCond(slider('automoveRange', 'Plan-Horizont', cfg, onField, 8, 22, 1), { any: 'automove' }),
+    check('rapidmove', 'Rapidmove (Movement+)', cfg, onField),
+    markCond(slider('rapidmoveStrength', 'Move-Stärke', cfg, onField, 1, 1.6, 0.05), { any: 'rapidmove' }),
+    markCond(slider('rapidmoveTurn', 'Turn-Speed', cfg, onField, 1, 1.8, 0.05), { any: 'rapidmove' }),
+    markCond(slider('rapidmoveAir', 'Luft-Kontrolle', cfg, onField, 1, 2.2, 0.05), { any: 'rapidmove' }),
     check('noclip', 'NoClip', cfg, onField),
     markCond(slider('flySpeed', 'NoClip-Speed', cfg, onField, 6, 40, 1), { any: 'noclip,fly' }),
     check('thirdPerson', 'Third Person', cfg, onField),
@@ -583,12 +588,19 @@ function transformSliders(prefix, cfg, onField, opts) {
   return wrap;
 }
 
+async function onAssetToggle(key, cfg, el) {
+  const { syncCustomAssetState } = await import('./customAssets.js');
+  await syncCustomAssetState(cfg);
+  refreshAssetLabels(cfg, el);
+}
+
 function fillAssets(el, cfg, onField, hooks) {
+  const assetToggle = (k, c) => onAssetToggle(k, c, el);
   const wpn = section('Custom-Waffe (nur du)');
   wpn.append(
     fileRow('weapon-file', 'Waffe hochladen', '.obj,.glb,.gltf'),
     labelRow('customWeaponName', cfg.customWeaponName || 'Keine Datei'),
-    check('customWeapon', 'Custom-Waffe an', cfg, onField),
+    check('customWeapon', 'Custom-Waffe an', cfg, onField, assetToggle),
     transformSliders('vm', cfg, onField, {
       scaleMin: 0.2, scaleMax: 3, posMin: -0.8, posMax: 0.8, posStep: 0.01, rotMin: -180, rotMax: 180,
       showWhen: { any: 'customWeapon' },
@@ -609,7 +621,7 @@ function fillAssets(el, cfg, onField, hooks) {
   ply.append(
     fileRow('player-file', 'Modell hochladen', '.obj,.glb,.gltf'),
     labelRow('customPlayerName', cfg.customPlayerName || 'Keine Datei'),
-    check('customPlayer', 'Custom-Modell an', cfg, onField),
+    check('customPlayer', 'Custom-Modell an', cfg, onField, assetToggle),
     transformSliders('pm', cfg, onField, {
       scaleMin: 0.2, scaleMax: 3, posMin: -2, posMax: 2, posStep: 0.02, rotMin: -180, rotMax: 180,
       showWhen: { any: 'customPlayer' },
@@ -709,7 +721,7 @@ function syncToggleRow(input) {
   if (row) row.classList.toggle('on', input.checked);
 }
 
-function check(key, label, cfg, onField) {
+function check(key, label, cfg, onField, afterChange) {
   const row = document.createElement('label');
   row.className = 'fs-row fs-toggle-row' + (cfg[key] ? ' on' : '');
   row.innerHTML = `<span class="fs-label">${label}</span>`;
@@ -730,9 +742,10 @@ function check(key, label, cfg, onField) {
   wrap.append(input, track);
   row.appendChild(wrap);
 
-  input.addEventListener('change', () => {
+  input.addEventListener('change', async () => {
     cfg[key] = input.checked;
     syncToggleRow(input);
+    if (afterChange) await afterChange(key, cfg);
     onField();
   });
   return row;

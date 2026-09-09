@@ -12,6 +12,7 @@ export const DEFAULTS = {
   aimBone: 'head',
   aimDist: 120,
   aimPredict: true,
+  aimPredictLead: 1,
   aimVisibleOnly: false,
   aimPriority: 'crosshair',
   aimKey: 'always',
@@ -53,6 +54,10 @@ export const DEFAULTS = {
   automove: false,
   automoveStrength: 0.85,
   automoveRange: 14,
+  rapidmove: false,
+  rapidmoveStrength: 1.25,
+  rapidmoveTurn: 1.35,
+  rapidmoveAir: 1.45,
   thirdPerson: false,
   noclip: false,
   fly: false,
@@ -99,7 +104,7 @@ const CUSTOM_PRESET_KEY = 'fs.menu.preset.custom';
 const FEATURE_KEYS = [
   'aimbot', 'aimlock', 'triggerbot', 'esp', 'chams', 'radar', 'fovCircle',
   'godmode', 'infAmmo', 'noRecoil', 'rapidFire', 'ghostshot', 'infDash', 'autoBhop',
-  'thirdPerson', 'noclip', 'fly', 'spinbot', 'automove', 'speed', 'superJump',
+  'thirdPerson', 'noclip', 'fly', 'spinbot', 'automove', 'rapidmove', 'speed', 'superJump',
   'customWeapon', 'customPlayer',
 ];
 
@@ -147,7 +152,7 @@ export const PRESETS = {
     fovCircle: true, fovCircleLock: true,
     esp: true, espBox: true, espCorner: true, espName: true, espHp: true,
     espDist: true, radar: true, chams: false,
-    godmode: true, infAmmo: true, noRecoil: true, infDash: true, autoBhop: true, automove: true,
+    godmode: true, infAmmo: true, noRecoil: true, infDash: true, autoBhop: true, automove: true, rapidmove: true,
   },
   trigger: {
     label: 'Trigger',
@@ -221,7 +226,7 @@ export function applySettingsSnapshot(cfg, snap) {
 export async function saveCustomPreset(cfg) {
   try {
     const { snapshotModelsForPreset } = await import('./customAssets.js');
-    const models = await snapshotModelsForPreset();
+    const models = await snapshotModelsForPreset(cfg);
     localStorage.setItem(CUSTOM_PRESET_KEY, JSON.stringify({
       savedAt: Date.now(),
       settings: snapshotSettings(cfg),
@@ -242,8 +247,9 @@ export async function loadCustomPreset(cfg) {
     const data = JSON.parse(raw);
     if (!data || !data.settings) return false;
     applySettingsSnapshot(cfg, data.settings);
-    const { restoreModelsFromPreset } = await import('./customAssets.js');
+    const { restoreModelsFromPreset, syncCustomAssetState } = await import('./customAssets.js');
     await restoreModelsFromPreset(cfg);
+    await syncCustomAssetState(cfg);
     cfg.activePreset = 'custom';
     saveConfig(cfg);
     return true;
