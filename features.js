@@ -21,6 +21,7 @@ const wrappedSpinGame = new WeakSet();
 let spinAngle = 0;
 
 const ghostState = { depth: 0, on: false };
+let triggerWantFire = false;
 
 const aimCtx = { cfg: null, menuOpen: false, game: null, hasTarget: false };
 
@@ -105,26 +106,39 @@ function wrapRecoil(player) {
   };
 }
 
-function wrapGhostshot(game) {
-  if (!game || wrappedGhost.has(game)) return;
-  wrappedGhost.add(game);
+function wrapWorldGhost(world) {
+  if (!world || typeof world.raycast !== 'function' || world._fsGhostWrap) return;
+  world._fsGhostWrap = true;
+  const origRay = world.raycast.bind(world);
+  world.raycast = function (...args) {
+    if (ghostState.depth > 0) return null;
+    return origRay(...args);
+  };
+}
 
-  if (game.world && typeof game.world.raycast === 'function' && !game.world._fsGhostWrap) {
-    game.world._fsGhostWrap = true;
-    const origRay = game.world.raycast.bind(game.world);
-    game.world.raycast = function (...args) {
-      if (ghostState.depth > 0) return null;
-      return origRay(...args);
-    };
-  }
+function withGhost(use, fn, args) {
+  if (use) ghostState.depth++;
+  try { return fn.apply(this, args); }
+  finally { if (use) ghostState.depth--; }
+}
+
+function wrapGhostshot(game) {
+  if (!game) return;
+  wrapWorldGhost(game.world);
+  if (wrappedGhost.has(game)) return;
+  wrappedGhost.add(game);
 
   if (typeof game._hitscan === 'function') {
     const origHitscan = game._hitscan.bind(game);
     game._hitscan = function (shooter, ...rest) {
-      const use = ghostState.on && shooter && shooter.isLocal;
-      if (use) ghostState.depth++;
-      try { return origHitscan(shooter, ...rest); }
-      finally { if (use) ghostState.depth--; }
+      return withGhost.call(this, ghostState.on && shooter && shooter.isLocal, origHitscan, [shooter, ...rest]);
+    };
+  }
+
+  if (typeof game.meleeAttack === 'function') {
+    const origMelee = game.meleeAttack.bind(game);
+    game.meleeAttack = function (actor, ...rest) {
+      return withGhost.call(this, ghostState.on && actor && actor.isLocal, origMelee, [actor, ...rest]);
     };
   }
 
@@ -133,9 +147,7 @@ function wrapGhostshot(game) {
     game.updateProjectiles = function (dt) {
       const use = ghostState.on && Array.isArray(game.projectiles)
         && game.projectiles.some((p) => p.owner && p.owner.isLocal);
-      if (use) ghostState.depth++;
-      try { return origProj(dt); }
-      finally { if (use) ghostState.depth--; }
+      return withGhost.call(this, use, origProj, [dt]);
     };
   }
 }
@@ -933,29 +945,63 @@ function wrapHandleInput(player) {
       input.dy = 0;
     }
     orig(input, dt);
+    if (!triggerWantFire || !this.intent || this.alive === false) return;
+    const w = this.weapon;
+    if (w && !w.auto && !w.melee && !w.charge && this.fireTimer > 0) {
+      this.intent.fire = false;
+      return;
+    }
+    if (w && !w.auto && !w.charge) this.triggerHeld = false;
+    this.intent.fire = true;
   };
 }
 
-function applyTrigger(game, player, cfg, camera, world, W, H, now) {
-  const list = enemies(game, player);
-  const intent = player.intent;
-  if (!intent) return;
-  const r = 14;
+function actorOnCrosshair(actor, camera, W, H, pad) {
+  const p = getPos(actor);
+  if (!p) return false;
+  const h = getHeight(actor);
+  const feet = worldToScreen(camera, p.x, p.y, p.z, W, H);
+  const head = worldToScreen(camera, p.x, p.y + h, p.z, W, H);
+  if (!feet || !head) return false;
+  const boxH = Math.max(18, Math.abs(head.y - feet.y));
+  const boxW = Math.max(14, boxH * 0.42);
+  const x = (feet.x + head.x) * 0.5 - boxW * 0.5;
+  const y = Math.min(head.y, feet.y);
+  const slack = pad || 4;
   const cx = W * 0.5, cy = H * 0.5;
+  return cx >= x - slack && cx <= x + boxW + slack && cy >= y - slack && cy <= y + boxH + slack;
+}
+
+function applyTrigger(game, player, cfg, camera, world, W, H, now) {
+  triggerWantFire = false;
+  if (!player || !player.alive || !camera || W < 2 || H < 2) return;
+  if (cfg.triggerOnAds && !(player.intent && (player.intent.ads || player.ads))) return;
+
+  const list = enemies(game, player);
+  const bone = cfg.triggerBone || cfg.aimBone || 'any';
+  const bones = bone === 'any' ? ['head', 'body'] : [bone];
+  const slack = cfg.triggerPad ?? 6;
   let hitActor = null;
+
   for (const a of list) {
-    if (!bonePos(a, 'head', _tgt)) continue;
-    const eye = eyePos(player, _eye);
-    if (cfg.triggerVisible && !losClear(world, eye.x, eye.y, eye.z, _tgt.x, _tgt.y, _tgt.z)) continue;
-    const s = worldToScreen(camera, _tgt.x, _tgt.y, _tgt.z, W, H);
-    if (!s) continue;
-    const dx = s.x - cx, dy = s.y - cy;
-    if (dx * dx + dy * dy <= r * r) { hitActor = a; break; }
+    const pp = getPos(player);
+    const ap = getPos(a);
+    if (pp && ap && distFlat(pp, ap) > (cfg.aimDist || 120)) continue;
+
+    let aim = null;
+    for (const b of bones) {
+      if (bonePos(a, b, _tgt)) { aim = { x: _tgt.x, y: _tgt.y, z: _tgt.z }; break; }
+    }
+    if (!aim) continue;
+    if (cfg.triggerVisible && !losClear(world, eyePos(player, _eye).x, _eye.y, _eye.z, aim.x, aim.y, aim.z)) continue;
+    if (!actorOnCrosshair(a, camera, W, H, slack)) continue;
+    hitActor = a;
+    break;
   }
+
   if (!hitActor) { triggerSince = 0; triggerTarget = null; return; }
-  if (cfg.triggerOnAds && !(intent.ads || player.ads)) return;
   if (triggerTarget !== hitActor) { triggerTarget = hitActor; triggerSince = now; }
-  if (now - triggerSince >= cfg.triggerDelay) intent.fire = true;
+  if (now - triggerSince >= (cfg.triggerDelay || 0)) triggerWantFire = true;
 }
 
 function setChamsMaterial(mat, on, color) {
@@ -1136,9 +1182,10 @@ export function applyFeatures(dt, ctx) {
     applySpeed(player, cfg);
     applyJump(player, cfg);
     applyTeleport(player);
-    applyCustomAssets(game, player, cfg);
+    applyCustomAssets(game, player, cfg, dt);
 
     if (menuOpen) {
+      triggerWantFire = false;
       suppressFire(player, input);
       currentAimTarget = null;
     } else {
@@ -1146,7 +1193,10 @@ export function applyFeatures(dt, ctx) {
         runAimAssist(game, player, cfg, input, world, dt);
       }
       if (cfg.triggerbot && camera && canvas) {
-        applyTrigger(game, player, cfg, camera, world, canvas.clientWidth, canvas.clientHeight, now);
+        const { W, H } = canvasSize(canvas);
+        applyTrigger(game, player, cfg, camera, world, W, H, now);
+      } else {
+        triggerWantFire = false;
       }
     }
   }

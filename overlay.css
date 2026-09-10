@@ -692,6 +692,42 @@
   gap: 6px;
   margin-bottom: 6px;
 }
+.fs-drop {
+  border: 1px dashed rgba(255, 204, 0, 0.32);
+  border-radius: 10px;
+  padding: 10px;
+  background: rgba(18, 24, 32, 0.65);
+  transition: border-color 0.15s, background 0.15s;
+}
+.fs-drop.over {
+  border-color: rgba(90, 230, 210, 0.7);
+  background: rgba(90, 230, 210, 0.08);
+}
+.fs-drop-hint {
+  font-size: 10px;
+  color: var(--fs-dim);
+  letter-spacing: 0.04em;
+}
+.fs-btn-row {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin: 6px 0 8px;
+}
+.fs-btn-row .fs-btn {
+  width: auto;
+  flex: 1;
+  margin-top: 0;
+  padding: 8px 6px;
+  letter-spacing: 0.06em;
+}
+.fs-asset-status {
+  font-size: 11px;
+  color: var(--fs-accent);
+  min-height: 1.2em;
+  margin: 0 0 8px;
+  word-break: break-all;
+}
 .fs-file {
   font: 600 11px/1 var(--fs-font);
   color: var(--fs-dim);

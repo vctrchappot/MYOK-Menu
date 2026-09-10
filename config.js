@@ -19,8 +19,10 @@ export const DEFAULTS = {
   aimlockKey: 'always',
   triggerbot: false,
   triggerOnAds: false,
-  triggerDelay: 80,
-  triggerVisible: true,
+  triggerDelay: 15,
+  triggerVisible: false,
+  triggerBone: 'any',
+  triggerPad: 8,
 
   // Visuals
   esp: false,
@@ -68,6 +70,12 @@ export const DEFAULTS = {
   customPlayer: false,
   customWeaponName: '',
   customPlayerName: '',
+  customWeaponTp: true,
+  vmFixUp: true,
+  pmFixUp: true,
+  pmClamp: true,
+  pmHideGun: true,
+  pmAnim: true,
   vmScale: 1,
   vmPosX: 0,
   vmPosY: 0,
@@ -160,7 +168,8 @@ export const PRESETS = {
     label: 'Trigger',
     desc: 'Automatisches Schießen bei Ziel im Fadenkreuz',
     aimbot: false, aimlock: false,
-    triggerbot: true, triggerDelay: 95, triggerVisible: true, triggerOnAds: false,
+    triggerbot: true, triggerDelay: 15, triggerVisible: false, triggerOnAds: false,
+    triggerBone: 'any', triggerPad: 8,
     fovCircle: false,
     esp: true, espBox: true, espCorner: false, espName: false, espHp: false,
     espDist: true, espDistMax: 100, radar: true, radarSize: 85,
@@ -345,6 +354,10 @@ export function loadConfig() {
     }
     if (saved.aimHead !== undefined && saved.aimBone === undefined) {
       cfg.aimBone = saved.aimHead ? 'head' : 'body';
+    }
+    if (saved.triggerBone === undefined && saved.triggerDelay === 80 && saved.triggerVisible === true) {
+      cfg.triggerDelay = DEFAULTS.triggerDelay;
+      cfg.triggerVisible = DEFAULTS.triggerVisible;
     }
   } catch (e) { /* ignore */ }
   if (typeof cfg.aimFov === 'number') cfg.aimFov = Math.max(0, Math.min(100, cfg.aimFov));

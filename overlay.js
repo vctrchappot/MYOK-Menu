@@ -485,7 +485,7 @@ function fillAim(el, cfg, onField) {
   const shared = markCond(section('Gemeinsam'), anyAim);
   shared.append(
     markCond(slider('aimFov', 'FOV-Radius', cfg, onField, 0, 100, 1), anyAim),
-    markCond(slider('aimDist', 'Max-Distanz', cfg, onField, 20, 250, 5), aimOn),
+    markCond(slider('aimDist', 'Max-Distanz', cfg, onField, 20, 250, 5), anyAim),
     markCond(select('aimBone', 'Zielpunkt', cfg, onField, [['head', 'Kopf'], ['body', 'Körper']]), aimOn),
     markCond(select('aimPriority', 'Priorität', cfg, onField, [
       ['crosshair', 'Nächstes zum Fadenkreuz'],
@@ -523,10 +523,20 @@ function fillAim(el, cfg, onField) {
   );
 
   const trig = section('Triggerbot');
+  const trigHint = markCond(document.createElement('p'), { any: 'triggerbot' });
+  trigHint.className = 'fs-list-hint';
+  trigHint.textContent = 'Schießt, sobald das Fadenkreuz auf der Hitbox liegt — nicht nur auf einem 14-Pixel-Punkt. Delay 0–30 ms fühlt sich direkt an.';
   trig.append(
     check('triggerbot', 'Triggerbot', cfg, onField),
-    markCond(slider('triggerDelay', 'Delay ms', cfg, onField, 0, 300, 10), { any: 'triggerbot' }),
-    markCond(check('triggerVisible', 'LOS-Check', cfg, onField), { any: 'triggerbot' }),
+    trigHint,
+    markCond(slider('triggerDelay', 'Delay ms', cfg, onField, 0, 200, 5), { any: 'triggerbot' }),
+    markCond(slider('triggerPad', 'Hitbox-Slack', cfg, onField, 0, 24, 1), { any: 'triggerbot' }),
+    markCond(select('triggerBone', 'Trefferzone', cfg, onField, [
+      ['any', 'Kopf + Körper'],
+      ['head', 'Nur Kopf'],
+      ['body', 'Nur Körper'],
+    ]), { any: 'triggerbot' }),
+    markCond(check('triggerVisible', 'LOS-Check (nur sichtbare)', cfg, onField), { any: 'triggerbot' }),
     markCond(check('triggerOnAds', 'Nur bei ADS', cfg, onField), { any: 'triggerbot' }),
   );
   el.append(shared, aim, lock, trig);
@@ -640,6 +650,31 @@ async function onAssetToggle(key, cfg, el) {
   refreshAssetLabels(cfg, el);
 }
 
+function wrapDeg(v) {
+  v = ((v + 180) % 360 + 360) % 360 - 180;
+  return Math.round(v * 10) / 10;
+}
+
+function assetToolbar(prefix, cfg, el, onField) {
+  const row = document.createElement('div');
+  row.className = 'fs-btn-row';
+  markCond(row, { any: prefix === 'vm' ? 'customWeapon' : 'customPlayer' });
+  const root = () => el.closest('#fs-root');
+  const bump = (axis, deg) => {
+    const key = prefix + 'Rot' + axis;
+    cfg[key] = wrapDeg((Number(cfg[key]) || 0) + deg);
+    refreshAllInputs(root(), cfg);
+    onField();
+  };
+  row.append(
+    btn('Y +90', '', () => bump('Y', 90)),
+    btn('Y −90', '', () => bump('Y', -90)),
+    btn('X +90', '', () => bump('X', 90)),
+    btn('Spiegeln', '', () => bump('Y', 180)),
+  );
+  return row;
+}
+
 function fillAssets(el, cfg, onField, hooks) {
   const assetToggle = (k, c) => onAssetToggle(k, c, el);
   const wpn = section('Custom-Waffe (nur du)');
@@ -647,10 +682,13 @@ function fillAssets(el, cfg, onField, hooks) {
     fileRow('weapon-file', 'Waffe hochladen', '.obj,.glb,.gltf'),
     labelRow('customWeaponName', cfg.customWeaponName || 'Keine Datei'),
     check('customWeapon', 'Custom-Waffe an', cfg, onField, assetToggle),
+    markCond(check('customWeaponTp', 'Auch in Third Person', cfg, onField), { any: 'customWeapon' }),
+    markCond(check('vmFixUp', 'Z-up automatisch drehen', cfg, onField, assetToggle), { any: 'customWeapon' }),
     transformSliders('vm', cfg, onField, {
-      scaleMin: 0.2, scaleMax: 3, posMin: -0.8, posMax: 0.8, posStep: 0.01, rotMin: -180, rotMax: 180,
+      scaleMin: 0.05, scaleMax: 8, posMin: -2, posMax: 2, posStep: 0.01, rotMin: -180, rotMax: 180,
       showWhen: { any: 'customWeapon' },
     }),
+    assetToolbar('vm', cfg, el, onField),
     markCond(btn('Transform zurücksetzen', '', () => {
       resetWeaponTransform(cfg);
       refreshAllInputs(el.closest('#fs-root'), cfg);
@@ -668,10 +706,15 @@ function fillAssets(el, cfg, onField, hooks) {
     fileRow('player-file', 'Modell hochladen', '.obj,.glb,.gltf'),
     labelRow('customPlayerName', cfg.customPlayerName || 'Keine Datei'),
     check('customPlayer', 'Custom-Modell an', cfg, onField, assetToggle),
+    markCond(check('pmFixUp', 'Z-up automatisch drehen', cfg, onField, assetToggle), { any: 'customPlayer' }),
+    markCond(check('pmAnim', 'Idle-Animation abspielen', cfg, onField, assetToggle), { any: 'customPlayer' }),
+    markCond(check('pmHideGun', 'Standard-Waffe verbergen', cfg, onField), { any: 'customPlayer' }),
+    markCond(check('pmClamp', 'Boden-Clamp (Füße)', cfg, onField), { any: 'customPlayer' }),
     transformSliders('pm', cfg, onField, {
-      scaleMin: 0.2, scaleMax: 3, posMin: -2, posMax: 2, posStep: 0.02, rotMin: -180, rotMax: 180,
+      scaleMin: 0.05, scaleMax: 8, posMin: -4, posMax: 4, posStep: 0.02, rotMin: -180, rotMax: 180,
       showWhen: { any: 'customPlayer' },
     }),
+    assetToolbar('pm', cfg, el, onField),
     markCond(btn('Transform zurücksetzen', '', () => {
       resetPlayerTransform(cfg);
       refreshAllInputs(el.closest('#fs-root'), cfg);
@@ -686,43 +729,21 @@ function fillAssets(el, cfg, onField, hooks) {
   );
   const hint = document.createElement('p');
   hint.className = 'fs-list-hint';
-  hint.textContent = 'Größe, Position und Rotation live anpassbar. Spielermodelle brauchen Third Person. Formate: OBJ, GLB, GLTF.';
-  el.append(hint, wpn, ply);
+  hint.textContent = 'OBJ / GLB / GLTF. Datei wählen oder in die Fläche ziehen. Custom-Spieler aktiviert Third Person. Y+90 / Spiegeln, wenn das Modell falsch rum steht.';
+  const status = document.createElement('p');
+  status.className = 'fs-asset-status';
+  status.dataset.assetStatus = '1';
+  el.append(hint, status, wpn, ply);
 
-  el.querySelector('#weapon-file').addEventListener('change', async (e) => {
-    const f = e.target.files && e.target.files[0];
-    if (!f || !hooks || !hooks.pickWeapon) return;
-    try {
-      await hooks.pickWeapon(f);
-      cfg.customWeapon = true;
-      cfg.customWeaponName = f.name;
-      refreshAssetLabels(cfg, el);
-      onField();
-    } catch (err) {
-      alert('Waffe konnte nicht geladen werden: ' + (err.message || err));
-    }
-    e.target.value = '';
-  });
-  el.querySelector('#player-file').addEventListener('change', async (e) => {
-    const f = e.target.files && e.target.files[0];
-    if (!f || !hooks || !hooks.pickPlayer) return;
-    try {
-      await hooks.pickPlayer(f);
-      cfg.customPlayer = true;
-      cfg.customPlayerName = f.name;
-      refreshAssetLabels(cfg, el);
-      onField();
-    } catch (err) {
-      alert('Modell konnte nicht geladen werden: ' + (err.message || err));
-    }
-    e.target.value = '';
-  });
+  wireAssetFile(el, 'weapon-file', cfg, hooks, 'weapon', onField);
+  wireAssetFile(el, 'player-file', cfg, hooks, 'player', onField);
+  refreshAssetLabels(cfg, el);
 }
 
 function fileRow(id, label, accept) {
   const row = document.createElement('div');
-  row.className = 'fs-file-row';
-  row.innerHTML = `<span class="fs-label">${label}</span>`;
+  row.className = 'fs-file-row fs-drop';
+  row.innerHTML = `<span class="fs-label">${label}</span><span class="fs-drop-hint">Datei wählen oder hierher ziehen</span>`;
   const input = document.createElement('input');
   input.type = 'file';
   input.id = id;
@@ -730,6 +751,47 @@ function fileRow(id, label, accept) {
   input.accept = accept;
   row.appendChild(input);
   return row;
+}
+
+async function applyAssetFile(f, cfg, hooks, kind, el, onField) {
+  if (!f || !hooks) return;
+  try {
+    if (kind === 'weapon') {
+      if (!hooks.pickWeapon) return;
+      await hooks.pickWeapon(f);
+      cfg.customWeapon = true;
+      cfg.customWeaponName = f.name;
+    } else {
+      if (!hooks.pickPlayer) return;
+      await hooks.pickPlayer(f);
+      cfg.customPlayer = true;
+      cfg.customPlayerName = f.name;
+    }
+    refreshAssetLabels(cfg, el);
+    onField();
+  } catch (err) {
+    alert((kind === 'weapon' ? 'Waffe' : 'Modell') + ' konnte nicht geladen werden: ' + (err.message || err));
+  }
+}
+
+function wireAssetFile(el, id, cfg, hooks, kind, onField) {
+  const input = el.querySelector('#' + id);
+  if (!input) return;
+  const row = input.closest('.fs-drop');
+  input.addEventListener('change', async (e) => {
+    const f = e.target.files && e.target.files[0];
+    await applyAssetFile(f, cfg, hooks, kind, el, onField);
+    e.target.value = '';
+  });
+  if (!row) return;
+  row.addEventListener('dragover', (e) => { e.preventDefault(); row.classList.add('over'); });
+  row.addEventListener('dragleave', () => row.classList.remove('over'));
+  row.addEventListener('drop', async (e) => {
+    e.preventDefault();
+    row.classList.remove('over');
+    const f = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
+    await applyAssetFile(f, cfg, hooks, kind, el, onField);
+  });
 }
 
 function labelRow(key, text) {
@@ -765,6 +827,12 @@ function refreshAssetLabels(cfg, root) {
   const p = page.querySelector('[data-asset-key="customPlayerName"]');
   if (w) w.textContent = cfg.customWeaponName || 'Keine Datei';
   if (p) p.textContent = cfg.customPlayerName || 'Keine Datei';
+  const s = page.querySelector('[data-asset-status]');
+  if (s) {
+    import('./customAssets.js').then(({ getAssetStatus }) => {
+      s.textContent = getAssetStatus() || '';
+    }).catch(() => {});
+  }
 }
 
 function hotkeyOpts() {

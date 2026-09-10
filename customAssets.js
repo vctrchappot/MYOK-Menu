@@ -12,11 +12,16 @@ let weaponGroup = null;
 let playerGroup = null;
 let weaponHolder = null;
 let playerHolder = null;
+let worldWeaponHolder = null;
 let weaponHidden = [];
 let playerHidden = [];
+let playerMixer = null;
+let attachedPlayerPivot = null;
+let attachedCharModel = null;
 let statusMsg = '';
 let loadersPromise = null;
 let lastWeaponTransform = readWeaponTransform({});
+const wrappedCharModels = new WeakSet();
 
 async function getLoaders() {
   if (!loadersPromise) {
@@ -39,18 +44,65 @@ function ext(name) {
   return i >= 0 ? name.slice(i + 1).toLowerCase() : '';
 }
 
-function normalizeGroup(group, targetHeight) {
+function maybeFixUpAxis(group) {
+  group.updateMatrixWorld(true);
   const box = new THREE.Box3().setFromObject(group);
+  if (box.isEmpty()) return;
+  const size = new THREE.Vector3();
+  box.getSize(size);
+  if (size.z > size.y * 1.22 && size.z > 0.02) {
+    group.rotation.x -= Math.PI / 2;
+    group.updateMatrixWorld(true);
+  }
+}
+
+function normalizeGroup(group, targetHeight, opts) {
+  const feet = !!(opts && opts.feet);
+  const fixUp = !opts || opts.fixUp !== false;
+  if (fixUp) maybeFixUpAxis(group);
+  group.updateMatrixWorld(true);
+  let box = new THREE.Box3().setFromObject(group);
   if (box.isEmpty()) return group;
   const size = new THREE.Vector3();
   box.getSize(size);
+  const h = feet ? Math.max(size.y, 0.001) : Math.max(size.y, size.x, size.z, 0.001);
+  group.scale.multiplyScalar(targetHeight / h);
+  group.updateMatrixWorld(true);
+  box = new THREE.Box3().setFromObject(group);
+  if (box.isEmpty()) return group;
   const center = new THREE.Vector3();
   box.getCenter(center);
-  group.position.sub(center);
-  const h = Math.max(size.y, size.x, size.z, 0.001);
-  const s = targetHeight / h;
-  group.scale.setScalar(s);
+  group.position.x -= center.x;
+  group.position.z -= center.z;
+  group.position.y -= feet ? box.min.y : center.y;
   return group;
+}
+
+function cloneAsset(group) {
+  const g = group.clone(true);
+  g.userData.clips = group.userData.clips || [];
+  return g;
+}
+
+function stopPlayerMixer() {
+  if (playerMixer) {
+    playerMixer.stopAllAction();
+    playerMixer = null;
+  }
+}
+
+function startPlayerMixer(root, clips, enabled) {
+  stopPlayerMixer();
+  if (!enabled || !root || !clips || !clips.length) return;
+  try {
+    playerMixer = new THREE.AnimationMixer(root);
+    const clip = clips.find((c) => /idle|wait|stand/i.test(c.name)) || clips[0];
+    const action = playerMixer.clipAction(clip);
+    action.reset();
+    action.play();
+  } catch (e) {
+    playerMixer = null;
+  }
 }
 
 function readWeaponTransform(cfg) {
@@ -81,6 +133,8 @@ function applyHolderTransform(holder, t) {
   if (!holder) return;
   holder.position.set(t.px, t.py, t.pz);
   holder.rotation.set(t.rx * DEG, t.ry * DEG, t.rz * DEG);
+  const s = Number.isFinite(t.scale) ? t.scale : 1;
+  holder.scale.setScalar(s);
 }
 
 async function parseFile(file) {
@@ -93,7 +147,11 @@ async function parseFile(file) {
   if (e === 'glb' || e === 'gltf') {
     const buf = await file.arrayBuffer();
     return new Promise((resolve, reject) => {
-      gltf.parse(buf, '', (data) => resolve(data.scene || data.scenes[0]), reject);
+      gltf.parse(buf, '', (data) => {
+        const scene = data.scene || data.scenes[0];
+        if (scene) scene.userData.clips = data.animations || [];
+        resolve(scene);
+      }, reject);
     });
   }
   throw new Error('Format: .obj, .glb oder .gltf');
@@ -177,6 +235,8 @@ function prepareWeaponModel(group, vm) {
   group.traverse((obj) => {
     if (!obj.isMesh) return;
     obj.frustumCulled = false;
+    obj.castShadow = true;
+    obj.receiveShadow = true;
     obj.renderOrder = 10;
     const mats = Array.isArray(obj.material) ? obj.material : [obj.material];
     for (const m of mats) {
@@ -188,6 +248,22 @@ function prepareWeaponModel(group, vm) {
         m.envMap = env;
         m.envMapIntensity = m.envMapIntensity || 0.55;
       }
+    }
+  });
+}
+
+function preparePlayerModel(group) {
+  group.traverse((obj) => {
+    if (!obj.isMesh) return;
+    obj.frustumCulled = false;
+    obj.castShadow = true;
+    obj.receiveShadow = true;
+    const mats = Array.isArray(obj.material) ? obj.material : [obj.material];
+    for (const m of mats) {
+      if (!m) continue;
+      m.side = THREE.FrontSide;
+      m.depthTest = true;
+      m.depthWrite = true;
     }
   });
 }
@@ -210,17 +286,29 @@ function restoreVmParts() {
   weaponHidden.length = 0;
 }
 
-function hidePlayerParts(model) {
-  playerHidden.length = 0;
+function hidePlayerParts(model, hideHolder) {
   if (!model) return;
-  const parts = [model.legL, model.legR, model.torso, model.head, model.armL, model.armR, model.weaponMesh];
+  const parts = [
+    model.legL, model.legR, model.torso, model.head, model.armL, model.armR,
+    model.hatMesh, model.weaponMesh,
+  ];
   for (const p of parts) {
     if (p && p.visible) { p.visible = false; playerHidden.push(p); }
+  }
+  if (hideHolder && model.weaponHolder && model.weaponHolder.visible) {
+    model.weaponHolder.visible = false;
+    playerHidden.push(model.weaponHolder);
+  } else if (!hideHolder && model.weaponHolder) {
+    const i = playerHidden.indexOf(model.weaponHolder);
+    if (i >= 0) {
+      model.weaponHolder.visible = true;
+      playerHidden.splice(i, 1);
+    }
   }
   if (model.tag && model.tag.sprite) model.tag.sprite.visible = false;
 }
 
-function restorePlayerParts(model) {
+function restorePlayerParts() {
   for (const p of playerHidden) p.visible = true;
   playerHidden.length = 0;
 }
@@ -242,14 +330,18 @@ function wrapViewModel(vm) {
 function attachWeapon(vm, group, t, doClear = true) {
   if (!vm || !vm.mesh) return;
   wrapViewModel(vm);
-  if (doClear) clearWeapon();
-  if (weaponHolder && weaponHolder.parent) weaponHolder.parent.remove(weaponHolder);
-  weaponGroup = group.clone(true);
+  if (doClear) {
+    restoreVmParts();
+    const mesh = weaponHolder && weaponHolder.parent && weaponHolder.parent.isMesh ? weaponHolder.parent : null;
+    if (mesh && mesh !== vm.mesh) restoreDefaultWeaponMesh(mesh);
+    if (weaponHolder && weaponHolder.parent) weaponHolder.parent.remove(weaponHolder);
+  } else if (weaponHolder && weaponHolder.parent) {
+    weaponHolder.parent.remove(weaponHolder);
+  }
+  weaponGroup = cloneAsset(group);
   prepareWeaponModel(weaponGroup, vm);
-  normalizeGroup(weaponGroup, WEAPON_LOCAL_HEIGHT);
-  weaponGroup.scale.multiplyScalar(t.scale || 1);
+  normalizeGroup(weaponGroup, WEAPON_LOCAL_HEIGHT, { fixUp: t.fixUp !== false });
   weaponHolder = new THREE.Group();
-  weaponHolder.userData.baseScale = t.scale;
   weaponHolder.add(weaponGroup);
   applyHolderTransform(weaponHolder, t);
   vm.mesh.add(weaponHolder);
@@ -257,82 +349,141 @@ function attachWeapon(vm, group, t, doClear = true) {
   hideVmParts(vm);
 }
 
-function attachPlayer(model, group, t) {
+function attachPlayer(model, group, t, cfg) {
   if (!model || !model.pivot) return;
   clearPlayer();
-  playerGroup = group.clone(true);
-  normalizeGroup(playerGroup, 2.2);
-  playerGroup.scale.multiplyScalar(t.scale || 1);
+  playerGroup = cloneAsset(group);
+  preparePlayerModel(playerGroup);
+  normalizeGroup(playerGroup, 2.2, { feet: true, fixUp: !cfg || cfg.pmFixUp !== false });
   playerHolder = new THREE.Group();
-  playerHolder.userData.baseScale = t.scale;
   playerHolder.add(playerGroup);
   applyHolderTransform(playerHolder, t);
   model.pivot.add(playerHolder);
-  hidePlayerParts(model);
+  attachedPlayerPivot = model.pivot;
+  hidePlayerParts(model, cfg ? shouldHideGunHolder(cfg) : true);
+  startPlayerMixer(playerGroup, playerGroup.userData.clips, !cfg || cfg.pmAnim !== false);
 }
 
-function updateWeaponTransform(cfg, vm) {
+function wrapCharacterModel(model) {
+  if (!model || wrappedCharModels.has(model) || typeof model.setWeapon !== 'function') return;
+  wrappedCharModels.add(model);
+  const orig = model.setWeapon.bind(model);
+  model.setWeapon = function (...args) {
+    orig(...args);
+    if (pendingWeapon && lastWeaponTransform && lastWeaponTransform.tp !== false) {
+      attachWorldWeapon(this, pendingWeapon.group, lastWeaponTransform);
+    }
+  };
+}
+
+function clearWorldWeapon() {
+  if (worldWeaponHolder && worldWeaponHolder.parent) worldWeaponHolder.parent.remove(worldWeaponHolder);
+  worldWeaponHolder = null;
+  if (attachedCharModel && attachedCharModel.weaponMesh) {
+    attachedCharModel.weaponMesh.visible = true;
+  }
+  attachedCharModel = null;
+}
+
+function attachWorldWeapon(model, group, t) {
+  if (!model || !model.weaponHolder) return;
+  wrapCharacterModel(model);
+  if (worldWeaponHolder && worldWeaponHolder.parent) worldWeaponHolder.parent.remove(worldWeaponHolder);
+  const g = cloneAsset(group);
+  prepareWeaponModel(g, null);
+  normalizeGroup(g, 0.85, { fixUp: t.fixUp !== false });
+  worldWeaponHolder = new THREE.Group();
+  worldWeaponHolder.add(g);
+  applyHolderTransform(worldWeaponHolder, {
+    scale: t.scale || 1,
+    px: (t.px || 0) * 0.45,
+    py: (t.py || 0) * 0.45,
+    pz: (t.pz || 0) * 0.45,
+    rx: t.rx || 0,
+    ry: t.ry || 0,
+    rz: t.rz || 0,
+  });
+  model.weaponHolder.add(worldWeaponHolder);
+  attachedCharModel = model;
+  if (model.weaponMesh) model.weaponMesh.visible = false;
+}
+
+function updateWeaponTransform(cfg, vm, player) {
   if (!vm || !vm.mesh) return;
   const t = readWeaponTransform(cfg);
+  t.fixUp = cfg.vmFixUp !== false;
+  t.tp = cfg.customWeaponTp !== false;
   lastWeaponTransform = { ...t };
-  if (!weaponHolder || weaponHolder.parent !== vm.mesh || weaponHolder.userData.baseScale !== t.scale) {
+  if (!weaponHolder || weaponHolder.parent !== vm.mesh || weaponHolder.userData.fixUp !== t.fixUp) {
     if (pendingWeapon) attachWeapon(vm, pendingWeapon.group, t);
-    return;
+  } else {
+    applyHolderTransform(weaponHolder, t);
+    hideVmParts(vm);
   }
-  applyHolderTransform(weaponHolder, t);
-  hideVmParts(vm);
+  if (weaponHolder) weaponHolder.userData.fixUp = t.fixUp;
+
+  const model = player && player.model;
+  if (t.tp && pendingWeapon && model && model.weaponHolder) {
+    if (!worldWeaponHolder || worldWeaponHolder.parent !== model.weaponHolder || worldWeaponHolder.userData.fixUp !== t.fixUp) {
+      attachWorldWeapon(model, pendingWeapon.group, t);
+    } else {
+      applyHolderTransform(worldWeaponHolder, {
+        scale: t.scale || 1,
+        px: (t.px || 0) * 0.45,
+        py: (t.py || 0) * 0.45,
+        pz: (t.pz || 0) * 0.45,
+        rx: t.rx || 0,
+        ry: t.ry || 0,
+        rz: t.rz || 0,
+      });
+      if (model.weaponMesh) model.weaponMesh.visible = false;
+    }
+    if (worldWeaponHolder) worldWeaponHolder.userData.fixUp = t.fixUp;
+  } else {
+    clearWorldWeapon();
+  }
 }
 
 function allowModelClip(cfg) {
   return !!(cfg && (cfg.noclip || cfg.fly));
 }
 
+function shouldHideGunHolder(cfg) {
+  if (!cfg || cfg.pmHideGun === false) return false;
+  if (cfg.customWeapon && cfg.customWeaponTp !== false) return false;
+  return true;
+}
+
 function clampPlayerModelToWorld(game, player, cfg) {
   if (!playerHolder || !playerGroup || !game || allowModelClip(cfg)) return;
+  if (cfg && cfg.pmClamp === false) return;
   const world = game.world;
   const pos = player && player.pos;
   if (!world || !pos || typeof world.groundAt !== 'function') return;
 
-  applyHolderTransform(playerHolder, readPlayerTransform(cfg));
+  const t = readPlayerTransform(cfg);
+  applyHolderTransform(playerHolder, t);
   playerHolder.updateMatrixWorld(true);
 
   const box = new THREE.Box3().setFromObject(playerGroup);
   if (box.isEmpty()) return;
 
-  const t = readPlayerTransform(cfg);
-  let adjY = 0;
-  let adjX = t.px;
-  let adjZ = t.pz;
-
   const groundY = world.groundAt(pos.x, pos.z, pos.y + 8);
-  if (typeof groundY === 'number') {
-    const lift = (groundY + 0.04) - box.min.y;
-    if (lift > 0) adjY = lift;
-  }
-
-  const bodyY = pos.y + (player.height || 2.2) * 0.45 + t.py;
-  const offLen = Math.hypot(t.px, t.pz);
-  if (offLen > 0.02 && typeof world.raycast === 'function') {
-    const dx = t.px / offLen, dz = t.pz / offLen;
-    const hit = world.raycast(pos.x, bodyY, pos.z, dx, 0, dz, offLen + 0.35);
-    if (hit && hit.t < offLen + 0.1) {
-      const allowed = Math.max(0, hit.t - 0.25);
-      const s = allowed / offLen;
-      adjX = t.px * s;
-      adjZ = t.pz * s;
-    }
-  }
-
-  playerHolder.position.set(adjX, t.py + adjY, adjZ);
-  playerHolder.rotation.set(t.rx * DEG, t.ry * DEG, t.rz * DEG);
+  if (typeof groundY !== 'number') return;
+  const lift = (groundY + 0.04) - box.min.y;
+  if (lift > 0.12) playerHolder.position.y = t.py + lift;
 }
 
 function updatePlayerTransform(cfg, model, game, player) {
   const t = readPlayerTransform(cfg);
-  if (!playerHolder || playerHolder.userData.baseScale !== t.scale) {
-    if (pendingPlayer && model) attachPlayer(model, pendingPlayer.group, t);
+  const parentOk = playerHolder && model && playerHolder.parent === model.pivot;
+  const flags = (cfg.pmFixUp !== false) + ':' + (cfg.pmAnim !== false);
+  if (!parentOk || (playerHolder && playerHolder.userData.flags !== flags)) {
+    if (pendingPlayer && model) attachPlayer(model, pendingPlayer.group, t, cfg);
+    if (playerHolder) playerHolder.userData.flags = flags;
   } else {
     applyHolderTransform(playerHolder, t);
+    hidePlayerParts(model, shouldHideGunHolder(cfg));
   }
   clampPlayerModelToWorld(game, player, cfg);
 }
@@ -344,13 +495,16 @@ export function clearWeapon(vm) {
   if (weaponHolder && weaponHolder.parent) weaponHolder.parent.remove(weaponHolder);
   weaponHolder = null;
   weaponGroup = null;
+  clearWorldWeapon();
 }
 
 export function clearPlayer() {
+  stopPlayerMixer();
   restorePlayerParts();
   if (playerHolder && playerHolder.parent) playerHolder.parent.remove(playerHolder);
   playerHolder = null;
   playerGroup = null;
+  attachedPlayerPivot = null;
 }
 
 export async function uploadWeapon(file) {
@@ -427,14 +581,14 @@ export async function syncCustomAssetState(cfg) {
   }
 }
 
-export function applyCustomAssets(game, player, cfg) {
+export function applyCustomAssets(game, player, cfg, dt) {
   if (!game || !player) return;
 
   const vm = game.viewmodel;
   const model = player.model;
 
   if (cfg.customWeapon && pendingWeapon && vm) {
-    updateWeaponTransform(cfg, vm);
+    updateWeaponTransform(cfg, vm, player);
   } else {
     clearWeapon(vm);
     if (!cfg.customWeapon) pendingWeapon = null;
@@ -444,6 +598,9 @@ export function applyCustomAssets(game, player, cfg) {
     updatePlayerTransform(cfg, model, game, player);
     model.setVisible(true);
     if (model.tag && model.tag.sprite) model.tag.sprite.visible = false;
+    if (playerMixer && dt > 0) {
+      try { playerMixer.update(dt); } catch (e) { stopPlayerMixer(); }
+    }
   } else {
     clearPlayer();
     if (!cfg.customPlayer) pendingPlayer = null;
