@@ -4,6 +4,11 @@ import {
   saveCustomPreset, loadCustomPreset, hasCustomPreset, getCustomPresetMeta,
   exportPresetPayload, applyImportedPreset, parsePresetPayload, presetExportFilename,
 } from './config.js';
+import {
+  AI_PROVIDERS, loadAiConfig, saveAiConfig, clearAiConfig,
+  isAiConfigured, resolvedModel, verifyAiConnection,
+  generateAiPreset, applyGeneratedPreset,
+} from './aiPreset.js';
 
 const TABS = [
   { id: 'presets', label: 'Presets' },
@@ -186,10 +191,14 @@ export function createOverlay(cfg, hooks) {
   }, true);
 
   addEventListener('keydown', (e) => {
+    const t = e.target;
+    const typing = t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT');
+    if (typing && state.open && t.closest && t.closest('#fs-panel')) {
+      e.stopImmediatePropagation();
+      return;
+    }
     if (e.code === 'Insert' || e.code === 'Home') {
       if (e.repeat) return;
-      const t = e.target;
-      if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT')) return;
       e.preventDefault();
       e.stopPropagation();
       toggle();
@@ -210,7 +219,9 @@ export function createOverlay(cfg, hooks) {
       if (e.target.closest && (
         e.target.closest('.fs-toggle-row') ||
         e.target.closest('.fs-slider') ||
-        e.target.closest('select')
+        e.target.closest('select') ||
+        e.target.closest('textarea') ||
+        e.target.closest('input.fs-text')
       )) return;
       const el = e.target.closest && e.target.closest('#fs-panel');
       if (el) softwareClick(e.target, state, cfg, onField, setTab, hooks);
@@ -417,6 +428,7 @@ function fillPresets(el, cfg, onField, root) {
     const meta = getCustomPresetMeta();
     if (!meta || !meta.savedAt) return 'Gespeichert';
     let s = new Date(meta.savedAt).toLocaleString('de-DE');
+    if (meta.aiName) s += ' · ' + meta.aiName;
     if (meta.models) s += ' · ' + meta.models;
     return s;
   }
@@ -468,6 +480,186 @@ function fillPresets(el, cfg, onField, root) {
   hint.className = 'fs-list-hint';
   hint.innerHTML = '<b>Aimbot</b> = sanftes Zielen · <b>Aimlock</b> = hartes Sticky-Tracking (wie in den meisten Cheats)';
   el.appendChild(hint);
+
+  fillAiSection(el, cfg, onField, root, {
+    refreshMeta() {
+      const metaEl = custom.querySelector('#fs-custom-meta');
+      if (metaEl) metaEl.textContent = formatCustomMeta();
+    },
+    setActive: setActivePreset,
+  });
+}
+
+function fillAiSection(el, cfg, onField, root, hooks) {
+  const ai = loadAiConfig();
+  const box = section('KI-Preset');
+  const intro = document.createElement('p');
+  intro.className = 'fs-list-hint';
+  intro.textContent = 'API-Key bleibt lokal im Browser und wird nicht ins Preset-Export geschrieben. Danach Preset in natürlicher Sprache beschreiben.';
+
+  const providerRow = document.createElement('label');
+  providerRow.className = 'fs-row';
+  providerRow.innerHTML = '<span class="fs-label">Anbieter</span>';
+  const providerSel = document.createElement('select');
+  providerSel.className = 'fs-select fs-select-wide';
+  for (const p of AI_PROVIDERS) {
+    const o = document.createElement('option');
+    o.value = p.id;
+    o.textContent = p.label;
+    if (p.id === ai.provider) o.selected = true;
+    providerSel.appendChild(o);
+  }
+  providerRow.appendChild(providerSel);
+
+  const modelRow = document.createElement('label');
+  modelRow.className = 'fs-row';
+  modelRow.innerHTML = '<span class="fs-label">Modell</span>';
+  const modelIn = document.createElement('input');
+  modelIn.type = 'text';
+  modelIn.className = 'fs-text';
+  modelIn.placeholder = AI_PROVIDERS.find((p) => p.id === ai.provider)?.defaultModel || '';
+  modelIn.value = ai.model || '';
+  modelRow.appendChild(modelIn);
+
+  const urlRow = document.createElement('label');
+  urlRow.className = 'fs-row';
+  urlRow.innerHTML = '<span class="fs-label">Base-URL</span>';
+  const urlIn = document.createElement('input');
+  urlIn.type = 'text';
+  urlIn.className = 'fs-text';
+  urlIn.placeholder = 'http://localhost:1234/v1';
+  urlIn.value = ai.baseUrl || '';
+  urlRow.appendChild(urlIn);
+
+  const keyRow = document.createElement('label');
+  keyRow.className = 'fs-row';
+  keyRow.innerHTML = '<span class="fs-label">API-Key</span>';
+  const keyIn = document.createElement('input');
+  keyIn.type = 'password';
+  keyIn.className = 'fs-text';
+  keyIn.autocomplete = 'off';
+  keyIn.spellcheck = false;
+  keyIn.placeholder = 'sk-…';
+  keyIn.value = ai.key || '';
+  keyRow.appendChild(keyIn);
+
+  const hint = document.createElement('p');
+  hint.className = 'fs-list-hint';
+  const status = document.createElement('p');
+  status.className = 'fs-ai-status';
+
+  const actions = document.createElement('div');
+  actions.className = 'fs-btn-row';
+
+  const prompt = document.createElement('textarea');
+  prompt.className = 'fs-area';
+  prompt.rows = 3;
+  prompt.placeholder = 'z. B. Legit Aim nur beim Zielen, dezentes ESP, kein Godmode';
+
+  const chips = document.createElement('div');
+  chips.className = 'fs-btn-row';
+  const examples = [
+    'Legit: sanfter Aimbot nur bei RMB, kleines FOV, minimales ESP',
+    'Rage: Aimlock auf Kopf, volle Visuals, No Recoil',
+    'Nur Triggerbot, schießt wenn jemand im Crosshair ist',
+  ];
+  for (const text of examples) {
+    chips.appendChild(btn(text, 'chip', () => { prompt.value = text; prompt.focus(); }));
+  }
+
+  function currentAi() {
+    return {
+      provider: providerSel.value,
+      key: keyIn.value.trim(),
+      model: modelIn.value.trim(),
+      baseUrl: urlIn.value.trim(),
+      verified: false,
+    };
+  }
+
+  function syncProviderUi() {
+    const p = AI_PROVIDERS.find((x) => x.id === providerSel.value) || AI_PROVIDERS[0];
+    modelIn.placeholder = p.defaultModel;
+    hint.textContent = p.hint;
+    keyIn.placeholder = p.keyHint || 'sk-…';
+    urlRow.classList.toggle('fs-hidden', p.id !== 'custom' && p.kind !== 'custom');
+    paintStatus();
+  }
+
+  function paintStatus() {
+    const saved = loadAiConfig();
+    if (!isAiConfigured(saved)) {
+      status.textContent = 'Nicht verbunden';
+      status.classList.remove('ok');
+      return;
+    }
+    const p = AI_PROVIDERS.find((x) => x.id === saved.provider);
+    status.textContent = (saved.verified ? 'Verbunden · ' : 'Key gespeichert · ')
+      + (p ? p.label : saved.provider) + ' · ' + resolvedModel(saved);
+    status.classList.toggle('ok', !!saved.verified);
+  }
+
+  actions.append(
+    btn('Speichern', '', () => {
+      const next = saveAiConfig(currentAi());
+      paintStatus();
+      if (!isAiConfigured(next)) alert('Bitte API-Key eintragen' + (next.provider === 'custom' ? ' und Base-URL.' : '.'));
+    }),
+    btn('Prüfen', 'primary', async () => {
+      const next = saveAiConfig(currentAi());
+      try {
+        const info = await verifyAiConnection(next);
+        paintStatus();
+        status.textContent = 'Verbunden · ' + info.provider + ' · ' + info.model;
+        status.classList.add('ok');
+      } catch (err) {
+        paintStatus();
+        status.classList.remove('ok');
+        alert(err.message || String(err));
+      }
+    }),
+    btn('Trennen', 'danger', () => {
+      const empty = clearAiConfig();
+      providerSel.value = empty.provider;
+      modelIn.value = '';
+      urlIn.value = '';
+      keyIn.value = '';
+      syncProviderUi();
+    }),
+  );
+
+  const genBtn = btn('Preset erzeugen', 'primary', async () => {
+    const next = saveAiConfig(currentAi());
+    genBtn.disabled = true;
+    genBtn.textContent = 'Erzeuge…';
+    try {
+      const generated = await generateAiPreset(prompt.value, next);
+      if (!(await applyGeneratedPreset(cfg, generated))) {
+        throw new Error('Preset konnte nicht gespeichert werden.');
+      }
+      refreshAllInputs(root, cfg);
+      refreshAssetLabels(cfg, root.querySelector('[data-page="assets"]'));
+      if (hooks && hooks.refreshMeta) hooks.refreshMeta();
+      if (hooks && hooks.setActive) hooks.setActive('custom');
+      onField();
+      status.textContent = 'Preset „' + generated.name + '“ übernommen';
+      status.classList.add('ok');
+    } catch (err) {
+      alert(err.message || String(err));
+    } finally {
+      genBtn.disabled = false;
+      genBtn.textContent = 'Preset erzeugen';
+    }
+  });
+
+  providerSel.addEventListener('change', () => {
+    saveAiConfig(currentAi());
+    syncProviderUi();
+  });
+
+  box.append(intro, providerRow, modelRow, urlRow, keyRow, hint, actions, status, prompt, chips, genBtn);
+  el.appendChild(box);
+  syncProviderUi();
 }
 
 function aimKeySelect(key, label, cfg, onField) {
@@ -978,6 +1170,13 @@ function softwareClick(el, state, cfg, onField, setTab, hooks) {
     box.dispatchEvent(new Event('change', { bubbles: true }));
     return;
   }
+
+  const field = el.closest && (
+    el.closest('textarea')
+    || el.closest('input.fs-text')
+    || (el.tagName === 'INPUT' && (el.type === 'text' || el.type === 'password') ? el : null)
+  );
+  if (field) { field.focus(); return; }
 
   const sel = el.tagName === 'SELECT' ? el : (el.closest && el.closest('select'));
   if (sel) {

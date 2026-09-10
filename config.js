@@ -111,6 +111,17 @@ const CUSTOM_PRESET_KEY = 'fs.menu.preset.custom';
 export const PRESET_FILE_KIND = 'fragtrainer-preset';
 const PRESET_EXPORT_SKIP = new Set(['panelX', 'panelY']);
 
+/** Diese Keys gehören nicht in ein KI-generiertes Combat-Preset. */
+export const AI_SKIP_KEYS = new Set([
+  'panelX', 'panelY', 'panelOpacity', 'activePreset',
+  'hkGod', 'hkEsp', 'hkAim', 'hkLock', 'hkSpeed',
+  'customWeapon', 'customPlayer', 'customWeaponName', 'customPlayerName',
+  'customWeaponTp', 'vmFixUp', 'pmFixUp', 'pmClamp', 'pmHideGun', 'pmAnim',
+  'vmScale', 'vmPosX', 'vmPosY', 'vmPosZ', 'vmRotX', 'vmRotY', 'vmRotZ',
+  'pmScale', 'pmPosX', 'pmPosY', 'pmPosZ', 'pmRotX', 'pmRotY', 'pmRotZ',
+  'aimHead',
+]);
+
 const FEATURE_KEYS = [
   'aimbot', 'aimlock', 'triggerbot', 'esp', 'chams', 'radar', 'fovCircle',
   'godmode', 'infAmmo', 'noRecoil', 'rapidFire', 'ghostshot', 'infDash', 'autoBhop',
@@ -234,14 +245,24 @@ export function applySettingsSnapshot(cfg, snap) {
   return true;
 }
 
-export async function saveCustomPreset(cfg) {
+export async function saveCustomPreset(cfg, extra) {
   try {
     const { snapshotModelsForPreset } = await import('./customAssets.js');
     const models = await snapshotModelsForPreset(cfg);
+    let ai = extra && extra.ai !== undefined ? extra.ai : undefined;
+    if (ai === undefined) {
+      try {
+        const prev = JSON.parse(localStorage.getItem(CUSTOM_PRESET_KEY) || 'null');
+        ai = prev && prev.ai ? prev.ai : null;
+      } catch (e) {
+        ai = null;
+      }
+    }
     localStorage.setItem(CUSTOM_PRESET_KEY, JSON.stringify({
       savedAt: Date.now(),
       settings: snapshotSettings(cfg),
       models,
+      ai: ai || null,
     }));
     cfg.activePreset = 'custom';
     saveConfig(cfg);
@@ -283,7 +304,8 @@ export function getCustomPresetMeta() {
     const parts = [];
     if (m.weapon) parts.push('Waffe');
     if (m.player) parts.push('Spieler');
-    return { savedAt: data.savedAt, models: parts.join(' + ') || null };
+    const aiName = data.ai && data.ai.name ? String(data.ai.name) : null;
+    return { savedAt: data.savedAt, models: parts.join(' + ') || null, aiName };
   } catch (e) {
     return null;
   }
@@ -332,7 +354,7 @@ export async function applyImportedPreset(cfg, data) {
   await syncCustomAssetState(cfg);
   cfg.activePreset = 'custom';
   saveConfig(cfg);
-  return saveCustomPreset(cfg);
+  return saveCustomPreset(cfg, { ai: parsed.name ? { name: parsed.name, desc: '', prompt: '' } : null });
 }
 
 export async function exportPresetPayload(cfg) {

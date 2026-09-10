@@ -430,6 +430,59 @@
 .fs-select:hover,
 .fs-select:focus { border-color: rgba(255, 204, 0, 0.35); outline: none; }
 
+.fs-select-wide {
+  max-width: none;
+  flex: 1;
+  min-width: 0;
+}
+
+.fs-text,
+.fs-area {
+  background: #121820;
+  color: var(--fs-text);
+  border: 1px solid #334055;
+  border-radius: 6px;
+  font: 600 12px/1.35 var(--fs-font);
+  padding: 7px 8px;
+  outline: none;
+  width: 100%;
+  min-width: 0;
+}
+.fs-text { flex: 1; }
+.fs-text:focus,
+.fs-area:focus { border-color: rgba(255, 204, 0, 0.35); }
+.fs-area {
+  resize: vertical;
+  min-height: 72px;
+  margin-top: 8px;
+}
+
+.fs-ai-status {
+  font-size: 11px;
+  color: var(--fs-dim);
+  margin: 6px 0 0;
+  min-height: 1.2em;
+}
+.fs-ai-status.ok { color: var(--fs-teal); }
+
+.fs-btn:disabled {
+  opacity: 0.55;
+  cursor: wait;
+  transform: none;
+}
+
+.fs-btn.chip {
+  width: auto;
+  flex: 1 1 100%;
+  margin-top: 0;
+  padding: 7px 8px;
+  letter-spacing: 0.02em;
+  text-transform: none;
+  font-weight: 600;
+  color: var(--fs-dim);
+  border-color: rgba(255, 255, 255, 0.1);
+}
+
 /* ---- Buttons ---- */
 .fs-btn {
   background: linear-gradient(180deg, #1c2432, #151c28);
