@@ -100,6 +100,8 @@ export const DEFAULTS = {
 };
 
 const CUSTOM_PRESET_KEY = 'fs.menu.preset.custom';
+export const PRESET_FILE_KIND = 'fragtrainer-preset';
+const PRESET_EXPORT_SKIP = new Set(['panelX', 'panelY']);
 
 const FEATURE_KEYS = [
   'aimbot', 'aimlock', 'triggerbot', 'esp', 'chams', 'radar', 'fovCircle',
@@ -276,6 +278,58 @@ export function getCustomPresetMeta() {
   } catch (e) {
     return null;
   }
+}
+
+export function buildPresetExport(cfg, models) {
+  const settings = snapshotSettings(cfg);
+  for (const k of PRESET_EXPORT_SKIP) delete settings[k];
+  return {
+    kind: PRESET_FILE_KIND,
+    version: 1,
+    exportedAt: Date.now(),
+    name: cfg.activePreset || 'custom',
+    settings,
+    models: models || { weapon: null, player: null },
+  };
+}
+
+export function presetExportFilename(cfg) {
+  const d = new Date();
+  const pad = (n) => String(n).padStart(2, '0');
+  const name = String(cfg.activePreset || 'custom').replace(/[^a-z0-9_-]+/gi, '').toLowerCase();
+  return `fragtrainer-${name || 'preset'}-${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}.json`;
+}
+
+export function parsePresetPayload(data) {
+  if (!data || typeof data !== 'object') return null;
+  if (data.kind === PRESET_FILE_KIND && data.settings && typeof data.settings === 'object') {
+    return { settings: data.settings, models: data.models || null, name: data.name || 'custom' };
+  }
+  if (data.settings && typeof data.settings === 'object') {
+    return { settings: data.settings, models: data.models || null, name: data.name || 'custom' };
+  }
+  if ('aimbot' in data || 'esp' in data || 'godmode' in data || 'aimlock' in data) {
+    return { settings: data, models: data.models || null, name: 'custom' };
+  }
+  return null;
+}
+
+export async function applyImportedPreset(cfg, data) {
+  const parsed = parsePresetPayload(data);
+  if (!parsed) return false;
+  applySettingsSnapshot(cfg, parsed.settings);
+  const { applyModelsFromExport, syncCustomAssetState } = await import('./customAssets.js');
+  await applyModelsFromExport(parsed.models, cfg);
+  await syncCustomAssetState(cfg);
+  cfg.activePreset = 'custom';
+  saveConfig(cfg);
+  return saveCustomPreset(cfg);
+}
+
+export async function exportPresetPayload(cfg) {
+  const { encodeModelsForExport } = await import('./customAssets.js');
+  const models = await encodeModelsForExport(cfg);
+  return buildPresetExport(cfg, models);
 }
 
 export function loadConfig() {

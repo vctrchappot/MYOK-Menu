@@ -612,6 +612,7 @@ function aimPitchOk(eye, out) {
 }
 
 function bonePos(actor, bone, out) {
+  if (actor && actor._fsTraining) return eyePosForAim(actor, out);
   if (bone === 'head') return eyePosForAim(actor, out);
   const p = getPos(actor);
   if (!p) return null;

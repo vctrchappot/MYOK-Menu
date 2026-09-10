@@ -99,6 +99,7 @@ export function getPlayer(game) {
 export function isEnemy(game, self, other) {
   if (!other || other === self) return false;
   if (!isAlive(other)) return false;
+  if (other._fsTraining) return true;
   if (game && typeof game.sameTeam === 'function') {
     try { return !game.sameTeam(self, other); } catch (e) { /* ignore */ }
   }
@@ -236,6 +237,7 @@ export function getTeam(actor) {
 
 export function isTeammate(game, self, other) {
   if (!other || other === self) return false;
+  if (other._fsTraining) return false;
   if (game && typeof game.sameTeam === 'function') {
     try { return game.sameTeam(self, other); } catch (e) { return false; }
   }

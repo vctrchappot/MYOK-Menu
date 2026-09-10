@@ -174,11 +174,81 @@ export function invalidate() {
   cacheAt = 0;
 }
 
+function syncTrainingActor(t, index) {
+  let a = t._fsActor;
+  if (!a) {
+    a = {
+      id: 'fs-tr-' + index,
+      name: 'Ziel',
+      isBot: true,
+      isLocal: false,
+      team: 'target',
+      pos: { x: 0, y: 0, z: 0 },
+      vel: { x: 0, y: 0, z: 0 },
+      hp: 100,
+      maxHp: 100,
+      alive: true,
+      grounded: true,
+      height: 1,
+      yaw: 0,
+      pitch: 0,
+      model: null,
+      _fsTraining: true,
+    };
+    a.eyeHeight = function () { return this.height * 0.5; };
+    a.eyePos = function (out) {
+      const o = out || { x: 0, y: 0, z: 0 };
+      o.x = this.pos.x;
+      o.y = this.pos.y + this.height * 0.5;
+      o.z = this.pos.z;
+      return o;
+    };
+    t._fsActor = a;
+  }
+
+  const r = t.r > 0.05 ? t.r : 0.5;
+  const now = performance.now();
+  if (a._fsT) {
+    const dt = Math.max(0.001, (now - a._fsT) / 1000);
+    a.vel.x = (t.x - a._fsX) / dt;
+    a.vel.y = (t.y - a._fsY) / dt;
+    a.vel.z = (t.z - a._fsZ) / dt;
+  }
+  a._fsT = now;
+  a._fsX = t.x;
+  a._fsY = t.y;
+  a._fsZ = t.z;
+
+  a.pos.x = t.x;
+  a.pos.y = t.y - r;
+  a.pos.z = t.z;
+  a.height = r * 2;
+  a.alive = true;
+  a.hp = 100;
+  a.model = t.group ? { root: t.group } : null;
+  return a;
+}
+
+function trainingActors(game) {
+  const tr = game && game.training;
+  if (!tr || !Array.isArray(tr.targets)) return [];
+  const out = [];
+  for (let i = 0; i < tr.targets.length; i++) {
+    const t = tr.targets[i];
+    if (!t || !t.active) continue;
+    out.push(syncTrainingActor(t, i));
+  }
+  return out;
+}
+
 export function actorList(game) {
   if (!game) return [];
+  let list = [];
   for (const k of ACTOR_ARRAY_KEYS) {
     const a = game[k];
-    if (Array.isArray(a)) return a;
+    if (Array.isArray(a)) { list = a; break; }
   }
-  return [];
+  const extra = trainingActors(game);
+  if (!extra.length) return list;
+  return list.concat(extra);
 }

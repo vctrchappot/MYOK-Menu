@@ -2,6 +2,7 @@ import {
   saveConfig, resetConfig, anyFeatureOn, PRESETS, applyPreset,
   resetWeaponTransform, resetPlayerTransform,
   saveCustomPreset, loadCustomPreset, hasCustomPreset, getCustomPresetMeta,
+  exportPresetPayload, applyImportedPreset, parsePresetPayload, presetExportFilename,
 } from './config.js';
 
 const TABS = [
@@ -376,10 +377,16 @@ function fillPresets(el, cfg, onField, root) {
       <strong>Custom</strong>
       <span id="fs-custom-meta">${formatCustomMeta()}</span>
     </div>
-    <p class="fs-list-hint">Eigene Einstellungen speichern, laden und verwenden.</p>
+    <p class="fs-list-hint">Eigene Einstellungen speichern, laden, als Datei exportieren oder importieren.</p>
     <div class="fs-custom-actions"></div>
   `;
   const actions = custom.querySelector('.fs-custom-actions');
+  const fileIn = document.createElement('input');
+  fileIn.type = 'file';
+  fileIn.accept = '.json,application/json';
+  fileIn.style.display = 'none';
+  custom.appendChild(fileIn);
+
   actions.append(
     btn('Speichern', '', async () => {
       if (await saveCustomPreset(cfg)) {
@@ -392,9 +399,18 @@ function fillPresets(el, cfg, onField, root) {
     }),
     btn('Laden', '', () => { applyCustomPreset(); }),
     btn('Verwenden', 'primary', () => { applyCustomPreset(); }),
+    btn('Exportieren', '', () => { exportCurrentPreset(); }),
+    btn('Importieren', '', () => { fileIn.click(); }),
   );
   grid.appendChild(custom);
   el.appendChild(grid);
+
+  fileIn.addEventListener('change', async () => {
+    const f = fileIn.files && fileIn.files[0];
+    fileIn.value = '';
+    if (!f) return;
+    await importPresetFile(f);
+  });
 
   function formatCustomMeta() {
     if (!hasCustomPreset()) return 'Noch nicht gespeichert';
@@ -416,6 +432,36 @@ function fillPresets(el, cfg, onField, root) {
     setActivePreset('custom');
     onField();
     return true;
+  }
+
+  async function exportCurrentPreset() {
+    try {
+      const payload = await exportPresetPayload(cfg);
+      downloadJson(presetExportFilename(cfg), payload);
+    } catch (e) {
+      alert('Preset konnte nicht exportiert werden.');
+    }
+  }
+
+  async function importPresetFile(file) {
+    try {
+      const data = JSON.parse(await file.text());
+      if (!parsePresetPayload(data)) {
+        alert('Ungültige Preset-Datei.');
+        return;
+      }
+      if (!(await applyImportedPreset(cfg, data))) {
+        alert('Preset konnte nicht importiert werden.');
+        return;
+      }
+      refreshAllInputs(root, cfg);
+      refreshAssetLabels(cfg, root.querySelector('[data-page="assets"]'));
+      custom.querySelector('#fs-custom-meta').textContent = formatCustomMeta();
+      setActivePreset('custom');
+      onField();
+    } catch (e) {
+      alert('Preset konnte nicht importiert werden.');
+    }
   }
 
   const hint = document.createElement('p');
@@ -701,6 +747,16 @@ function btn(text, kind, fn) {
   b.textContent = text;
   b.addEventListener('click', fn);
   return b;
+}
+
+function downloadJson(filename, obj) {
+  const blob = new Blob([JSON.stringify(obj, null, 2)], { type: 'application/json' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 800);
 }
 
 function refreshAssetLabels(cfg, root) {

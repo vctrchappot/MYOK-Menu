@@ -464,6 +464,101 @@ async function copyBlobEntry(fromKey, toKey) {
   return null;
 }
 
+function blobToBase64(blob) {
+  return new Promise((resolve, reject) => {
+    const r = new FileReader();
+    r.onload = () => {
+      const s = String(r.result || '');
+      const i = s.indexOf(',');
+      resolve(i >= 0 ? s.slice(i + 1) : s);
+    };
+    r.onerror = () => reject(r.error);
+    r.readAsDataURL(blob);
+  });
+}
+
+function base64ToBlob(b64, type) {
+  const bin = atob(b64);
+  const arr = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
+  return new Blob([arr], { type: type || 'application/octet-stream' });
+}
+
+async function encodeBlobKey(key) {
+  const row = await loadBlob(key);
+  if (!row || !row.blob) return null;
+  return {
+    name: row.name || key,
+    type: row.blob.type || 'application/octet-stream',
+    data: await blobToBase64(row.blob),
+  };
+}
+
+/** Modelle als Base64 für eine exportierte Preset-Datei. */
+export async function encodeModelsForExport(cfg) {
+  return {
+    weapon: cfg && cfg.customWeapon ? await encodeBlobKey('weapon') : null,
+    player: cfg && cfg.customPlayer ? await encodeBlobKey('player') : null,
+  };
+}
+
+async function restoreEncodedModel(slot, encoded) {
+  const liveKey = slot === 'player' ? 'player' : 'weapon';
+  const presetKey = slot === 'player' ? PRESET_PLAYER : PRESET_WEAPON;
+  if (!encoded || !encoded.data) {
+    await deleteBlob(liveKey);
+    await deleteBlob(presetKey);
+    if (slot === 'player') {
+      pendingPlayer = null;
+      clearPlayer();
+    } else {
+      pendingWeapon = null;
+      clearWeapon();
+    }
+    return null;
+  }
+  const blob = base64ToBlob(encoded.data, encoded.type);
+  const name = encoded.name || (slot === 'player' ? 'player.glb' : 'weapon.glb');
+  await saveBlob(liveKey, blob, name);
+  if (slot === 'player') return loadPlayerFromStore();
+  return loadWeaponFromStore();
+}
+
+/** Modelle aus einer importierten Preset-Datei wiederherstellen. */
+export async function applyModelsFromExport(models, cfg) {
+  if (!models || typeof models !== 'object') {
+    if (cfg && !cfg.customWeapon) {
+      pendingWeapon = null;
+      clearWeapon();
+    }
+    if (cfg && !cfg.customPlayer) {
+      pendingPlayer = null;
+      clearPlayer();
+    }
+    return;
+  }
+
+  if (cfg && cfg.customWeapon && models.weapon && models.weapon.data) {
+    await restoreEncodedModel('weapon', models.weapon);
+  } else {
+    if (cfg) {
+      cfg.customWeapon = false;
+      cfg.customWeaponName = '';
+    }
+    await restoreEncodedModel('weapon', null);
+  }
+
+  if (cfg && cfg.customPlayer && models.player && models.player.data) {
+    await restoreEncodedModel('player', models.player);
+  } else {
+    if (cfg) {
+      cfg.customPlayer = false;
+      cfg.customPlayerName = '';
+    }
+    await restoreEncodedModel('player', null);
+  }
+}
+
 /** Modelle + Metadaten für Custom-Preset sichern (nur aktivierte Slots). */
 export async function snapshotModelsForPreset(cfg) {
   let weapon = null;
